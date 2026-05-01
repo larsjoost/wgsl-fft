@@ -1,16 +1,16 @@
 [package]
-name        = "wgls-rs-fft"
-version     = "0.0.0-reserved"
+name        = "wgsl-fft"
+version     = "0.1.0"
 edition     = "2021"
-description = "GPU-accelerated FFT using wgpu compute shaders (Cooley-Tukey radix-2 DIT)"
+description = "GPU-accelerated FFT using Webgpu compute shaders"
 license     = "MIT"
-repository  = "https://github.com/larsjoost/wgls-rs-fft"
+repository  = "https://github.com/larsjoost/wgsl-fft"
 readme      = "README.md"
 keywords    = ["fft", "gpu", "wgpu", "compute", "signal-processing"]
 categories  = ["algorithms", "science", "multimedia"]
 
 [lib]
-name = "wgls_rs_fft"
+name = "wgsl_fft"
 path = "src/lib.rs"
 
 [dependencies]
@@ -18,8 +18,7 @@ wgpu        = "29"
 bytemuck    = { version = "1", features = ["derive"] }
 pollster    = "0.4"
 num-complex = "0.4"
-# CPU fallback runtime: same shader code runs on CPU via Rayon when no GPU is available.
-wgsl-rs = { git = "https://github.com/schell/wgsl-rs", rev = "07175c49dfc231f309c5fc6a4b86750d00dfd7cc" }
+
 cudarc = { version = "0.19.4", optional = true, default-features = false, features = ["std", "driver", "cufft", "dynamic-loading", "cuda-12000"] }
 rocm-rs = { version = "0.5.1", optional = true }
 

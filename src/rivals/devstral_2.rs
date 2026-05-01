@@ -3,7 +3,6 @@ use std::cell::RefCell;
 use std::num::NonZeroU64;
 
 use num_complex::Complex;
-use wgsl_rs::wgsl;
 
 use crate::FftExecutor;
 

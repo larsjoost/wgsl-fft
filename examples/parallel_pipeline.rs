@@ -267,9 +267,18 @@ fn make_staged_bind_groups(
                             size: uniform_sz,
                         }),
                     },
-                    wgpu::BindGroupEntry { binding: 1, resource: src.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 2, resource: dst.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 3, resource: twiddle_buf.as_entire_binding() },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: src.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: dst.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: twiddle_buf.as_entire_binding(),
+                    },
                 ],
             })
         })
@@ -303,9 +312,18 @@ fn make_r2_bind_group(
                     size: uniform_sz,
                 }),
             },
-            wgpu::BindGroupEntry { binding: 1, resource: src.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 2, resource: dst.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 3, resource: twiddle_buf.as_entire_binding() },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: src.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: dst.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: twiddle_buf.as_entire_binding(),
+            },
         ],
     })
 }
@@ -329,7 +347,10 @@ fn make_noise_bg(
                     size: uniform_sz,
                 }),
             },
-            wgpu::BindGroupEntry { binding: 1, resource: data_buf.as_entire_binding() },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: data_buf.as_entire_binding(),
+            },
         ],
     })
 }
@@ -344,8 +365,14 @@ fn make_window_bg(
         label: Some("window_bg"),
         layout: &pipeline.get_bind_group_layout(0),
         entries: &[
-            wgpu::BindGroupEntry { binding: 0, resource: spectrum_buf.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 1, resource: window_buf.as_entire_binding() },
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: spectrum_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: window_buf.as_entire_binding(),
+            },
         ],
     })
 }
@@ -369,7 +396,10 @@ fn make_scale_bg(
                     size: uniform_sz,
                 }),
             },
-            wgpu::BindGroupEntry { binding: 1, resource: result_buf.as_entire_binding() },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: result_buf.as_entire_binding(),
+            },
         ],
     })
 }
@@ -409,26 +439,74 @@ fn build_slot(
         make_fft_uniforms(device, queue, n, num_r4, has_r2, stride);
 
     let fft_bgs = make_staged_bind_groups(
-        device, num_r4, false, fft_r4_pipeline,
-        &fft_uniform_buf, stride, fwd_twiddle_buf, &buf_a, &buf_b, uniform_sz,
+        device,
+        num_r4,
+        false,
+        fft_r4_pipeline,
+        &fft_uniform_buf,
+        stride,
+        fwd_twiddle_buf,
+        &buf_a,
+        &buf_b,
+        uniform_sz,
     );
-    let fft_r2_bg = has_r2.then(|| make_r2_bind_group(
-        device, num_r4, false, fft_r2_pipeline,
-        &fft_uniform_buf, stride, fwd_twiddle_buf, &buf_a, &buf_b, uniform_sz,
-    ));
+    let fft_r2_bg = has_r2.then(|| {
+        make_r2_bind_group(
+            device,
+            num_r4,
+            false,
+            fft_r2_pipeline,
+            &fft_uniform_buf,
+            stride,
+            fwd_twiddle_buf,
+            &buf_a,
+            &buf_b,
+            uniform_sz,
+        )
+    });
     let ifft_bgs = make_staged_bind_groups(
-        device, num_r4, fft_result_in_b, fft_r4_pipeline,
-        &ifft_uniform_buf, stride, inv_twiddle_buf, &buf_a, &buf_b, uniform_sz,
+        device,
+        num_r4,
+        fft_result_in_b,
+        fft_r4_pipeline,
+        &ifft_uniform_buf,
+        stride,
+        inv_twiddle_buf,
+        &buf_a,
+        &buf_b,
+        uniform_sz,
     );
-    let ifft_r2_bg = has_r2.then(|| make_r2_bind_group(
-        device, num_r4, fft_result_in_b, fft_r2_pipeline,
-        &ifft_uniform_buf, stride, inv_twiddle_buf, &buf_a, &buf_b, uniform_sz,
-    ));
+    let ifft_r2_bg = has_r2.then(|| {
+        make_r2_bind_group(
+            device,
+            num_r4,
+            fft_result_in_b,
+            fft_r2_pipeline,
+            &ifft_uniform_buf,
+            stride,
+            inv_twiddle_buf,
+            &buf_a,
+            &buf_b,
+            uniform_sz,
+        )
+    });
 
     let spectrum_buf = if fft_result_in_b { &buf_b } else { &buf_a };
-    let noise_bg = make_noise_bg(device, noise_pipeline, &noise_uniform_buf, &buf_a, uniform_sz);
+    let noise_bg = make_noise_bg(
+        device,
+        noise_pipeline,
+        &noise_uniform_buf,
+        &buf_a,
+        uniform_sz,
+    );
     let window_bg = make_window_bg(device, window_pipeline, spectrum_buf, window_buf);
-    let scale_bg = make_scale_bg(device, scale_pipeline, &scale_uniform_buf, &buf_a, uniform_sz);
+    let scale_bg = make_scale_bg(
+        device,
+        scale_pipeline,
+        &scale_uniform_buf,
+        &buf_a,
+        uniform_sz,
+    );
 
     Slot {
         buf_a,
@@ -462,7 +540,9 @@ impl Pipeline {
             .expect("device creation failed")
     }
 
-    fn compile_pipelines(device: &wgpu::Device) -> (
+    fn compile_pipelines(
+        device: &wgpu::Device,
+    ) -> (
         wgpu::ComputePipeline,
         wgpu::ComputePipeline,
         wgpu::ComputePipeline,
@@ -546,11 +626,21 @@ impl Pipeline {
         let slots: Vec<Slot> = (0..N_SLOTS)
             .map(|_| {
                 build_slot(
-                    &device, &queue,
-                    &noise_pipeline, &fft_r4_pipeline, &fft_r2_pipeline,
-                    &window_pipeline, &scale_pipeline,
-                    &fwd_twiddle_buf, &inv_twiddle_buf, &window_buf,
-                    n, batch_size, num_r4, has_r2, fft_result_in_b,
+                    &device,
+                    &queue,
+                    &noise_pipeline,
+                    &fft_r4_pipeline,
+                    &fft_r2_pipeline,
+                    &window_pipeline,
+                    &scale_pipeline,
+                    &fwd_twiddle_buf,
+                    &inv_twiddle_buf,
+                    &window_buf,
+                    n,
+                    batch_size,
+                    num_r4,
+                    has_r2,
+                    fft_result_in_b,
                 )
             })
             .collect();
@@ -643,16 +733,19 @@ impl Pipeline {
     /// Upload raw f32 data (interleaved re/im), run all pipeline stages, return submission index.
     fn submit_frame(&self, slot_idx: usize, frame_seed: u32, raw: &[f32]) -> wgpu::SubmissionIndex {
         let slot = &self.slots[slot_idx];
-        self.queue.write_buffer(&slot.buf_a, 0, bytemuck::cast_slice(raw));
+        self.queue
+            .write_buffer(&slot.buf_a, 0, bytemuck::cast_slice(raw));
         self.queue.write_buffer(
             &slot.noise_uniform_buf,
             0,
             bytemuck::cast_slice(&[self.n as u32, frame_seed, 0u32, 0u32]),
         );
 
-        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("pipeline_enc"),
-        });
+        let mut enc = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("pipeline_enc"),
+            });
         let bs = self.batch_size as u32;
 
         self.dispatch_noise(&mut enc, slot, bs);

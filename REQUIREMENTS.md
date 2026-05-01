@@ -34,14 +34,13 @@ The planner must choose a dispatch strategy based on the relationship between FF
 ## 3. High-Performance WGSL Kernels
 
 * **Mixed-Radix (4 or 8):** Use Radix-4 or Radix-8 butterflies to reduce pass count from log₂N to log₄N or log₈N, and to reduce register pressure. Any Radix size maybe be used.
-* **WGSL source format:** Write WGSL as either a `#[wgsl]` annotated Rust module (via `wgsl-rs` macro, as in `src/shaders.rs`) or as a raw `const &str` WGSL string passed to `wgpu::ShaderSource::Wgsl`. Both are valid. Raw strings are simpler for complex kernels (radix-8, multi-stage) where the macro's Rust-to-WGSL translation adds friction.
+* **WGSL source format:** Write WGSL as raw `const &str` strings passed to `wgpu::ShaderSource::Wgsl`. Raw strings are used for all kernels in `src/shaders.rs`.
 * **Subgroup Shuffle Optimization (where available):** `subgroupShuffle` allows threads to exchange data within a wave (32–64 threads) without touching shared memory, which is significantly faster. However, this requires `wgpu::Features::SUBGROUP` to be explicitly requested at device creation and is not available on all backends (notably some Metal and DX12 configurations). Guard its use behind a runtime feature check and fall back to `workgroupBarrier`-based exchange.
 * **Twiddle Factor Pre-computation:** Twiddle factors are identical for every signal in the batch. Store them in a read-only storage buffer to leverage the GPU's constant cache. The baseline already implements this.
 
-## 4. Rust Orchestrator (wgpu + wgsl-rs)
+## 4. Rust Orchestrator (wgpu)
 
-* **JIT Specialization:** To enable loop unrolling and constant folding, generate a distinct WGSL source string per size with N baked in as a literal — not passed as a runtime uniform. Use `wgsl-rs` to assemble these strings. Note: simply wrapping a shader in `#[wgsl]` while still reading N from a uniform buffer does not constitute JIT specialization.
-* **Pipeline Overridable Constants:** WebGPU `override` declarations let you specialize scalar constants at pipeline creation time without a full shader recompilation. This is useful for fixed parameters like workgroup size, but cannot change loop trip counts or array dimensions in a way the driver can unroll — the gains are more modest than full JIT specialization.
+* **Pipeline Overridable Constants:** WebGPU `override` declarations let you specialize scalar constants at pipeline creation time without a full shader recompilation. This is useful for fixed parameters like workgroup size, but cannot change loop trip counts or array dimensions in a way the driver can unroll.
 * **Command Encoding:** Use `dispatch_workgroups(groups_x, batch_size, 1)` where `groups_x` covers the butterflies-per-stage at 256 threads per group. For a Radix-R kernel, each stage computes N/R butterflies: `groups_x = (n / R).div_ceil(256)`. The formula `(n/2).div_ceil(256)` is Radix-2 specific. The Y dimension carries the batch index into the kernel.
 
 ## 5. Performance Monitoring

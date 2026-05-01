@@ -7,11 +7,10 @@ where each stage reads from one buffer and writes to the other. This eliminates 
 bit-reversal pass and removes all inter-stage memory hazards, allowing the entire transform
 to run in a single GPU compute pass with one `queue.submit()` call.
 
-**GPU-accelerated with CPU fallback**: This library uses wgpu compute shaders for GPU acceleration when available.
-If no GPU is available, it automatically falls back to CPU-based software rendering using wgpu's fallback adapter.
+**GPU-accelerated**: This library uses wgpu compute shaders for GPU acceleration.
+If no GPU is available, wgpu's fallback adapter provides CPU-based software rendering.
 
-The WGSL compute kernels were authored with [wgsl-rs](https://github.com/schell/wgsl-rs) —
-a crate that lets you write type-safe, Rust-like WGSL shaders that are validated at compile time.
+The WGSL compute kernels are embedded as raw WGSL strings in [`src/shaders.rs`](src/shaders.rs).
 
 ## Usage
 
@@ -134,10 +133,9 @@ Batch processing maintains identical numerical accuracy to single-vector process
 
 ## Shader development
 
-The canonical shader source is in [`src/shaders.rs`](src/shaders.rs),
-written with [wgsl-rs](https://github.com/schell/wgsl-rs). The Stockham autosort
-kernel implements the entire FFT in a single compute shader that processes
-all log₂(N) stages sequentially.
+The canonical shader source is in [`src/shaders.rs`](src/shaders.rs) as raw WGSL strings.
+The Stockham autosort kernel implements the entire FFT in a single compute shader
+that processes all log₂(N) stages sequentially.
 
 To verify correctness and run performance benchmarks:
 
@@ -159,7 +157,7 @@ The implementation includes several optimizations:
 - **Single-pass execution**: All FFT stages run in one compute pass
 - **Optimized synchronization**: Reduced CPU-GPU synchronization overhead
 - **Efficient memory access**: Ping-pong buffers eliminate memory hazards
-- **Automatic CPU fallback**: Uses wgsl-rs software rasterizer when no GPU is available
+- **Automatic fallback**: Uses wgpu's software fallback adapter when no GPU is available
 
 For best performance:
 - Use `--release` builds

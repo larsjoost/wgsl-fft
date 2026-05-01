@@ -2,129 +2,120 @@ use std::any::Any;
 
 use crate::{FftExecutor, GpuFft};
 use num_complex::Complex;
-use wgsl_rs::wgsl;
 
-// Need wgpu for the GpuFftTrait implementation
-use wgpu;
+const RADIX4_WGSL: &str = r#"
+@group(0) @binding(0)
+var<uniform> U: vec4<u32>;
+@group(0) @binding(1)
+var<storage, read_write> SRC: array<f32>;
+@group(0) @binding(2)
+var<storage, read_write> DST: array<f32>;
+@group(0) @binding(3)
+var<storage, read> TWIDDLE: array<f32>;
 
-#[wgsl]
-pub mod radix4_kernel {
-    use wgsl_rs::std::*;
+@compute @workgroup_size(256, 1, 1)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let tid = gid.x;
+    let batch_id = gid.y;
+    let n = U.x;
+    let stage = U.y;
+    let batch_offset = batch_id * n * 2u;
 
-    uniform!(group(0), binding(0), U: Vec4u);
-    storage!(group(0), binding(1), read_write, SRC: RuntimeArray<f32>);
-    storage!(group(0), binding(2), read_write, DST: RuntimeArray<f32>);
-    storage!(group(0), binding(3), TWIDDLE: RuntimeArray<f32>);
+    // For Radix-4, we only process even stages (0, 2, 4, ...)
+    // Odd stages (1, 3, 5, ...) are identity operations (copy SRC to DST)
+    if stage % 2u != 0u {
+        let idx1 = tid;
+        let idx2 = tid + (n >> 1u);
 
-    #[compute]
-    #[workgroup_size(256, 1, 1)]
-    pub fn main(#[builtin(global_invocation_id)] gid: Vec3u) {
-        let tid = gid.x;
-        let batch_id = gid.y;
-        let n = get!(U).x;
-        let stage = get!(U).y;
-        let batch_offset = batch_id * n * 2u32;
-
-        // For Radix-4, we only process even stages (0, 2, 4, ...)
-        // Odd stages (1, 3, 5, ...) are identity operations (copy SRC to DST)
-        if stage % 2u32 != 0u32 {
-            // Each thread in a radix-2 dispatch processes 2 elements normally.
-            // Since we are dispatched with n/2 threads, each thread can copy 2 complex numbers (4 floats).
-            let idx1 = tid;
-            let idx2 = tid + (n >> 1u32);
-
-            if idx1 < n {
-                let s1 = batch_offset + 2u32 * idx1;
-                get_mut!(DST)[s1] = get!(SRC)[s1];
-                get_mut!(DST)[s1 + 1u32] = get!(SRC)[s1 + 1u32];
-            }
-            if idx2 < n {
-                let s2 = batch_offset + 2u32 * idx2;
-                get_mut!(DST)[s2] = get!(SRC)[s2];
-                get_mut!(DST)[s2 + 1u32] = get!(SRC)[s2 + 1u32];
-            }
-            return;
+        if idx1 < n {
+            let s1 = batch_offset + 2u * idx1;
+            DST[s1] = SRC[s1];
+            DST[s1 + 1u] = SRC[s1 + 1u];
         }
-
-        let quarter_n = n >> 2u32;
-        if tid >= quarter_n {
-            return;
+        if idx2 < n {
+            let s2 = batch_offset + 2u * idx2;
+            DST[s2] = SRC[s2];
+            DST[s2 + 1u] = SRC[s2 + 1u];
         }
-
-        let r4_stage = stage / 2u32;
-
-        let p = 1u32 << (r4_stage + r4_stage);
-        let four_p = p << 2u32;
-
-        let k = tid % p;
-        let j = tid / p;
-
-        // Source: natural-order read (Stockham DIT).
-        let i0 = j * p + k;
-        let i1 = i0 + quarter_n;
-        let i2 = i0 + quarter_n + quarter_n;
-        let i3 = i2 + quarter_n;
-
-        let s0 = batch_offset + 2u32 * i0;
-        let s1 = batch_offset + 2u32 * i1;
-        let s2 = batch_offset + 2u32 * i2;
-        let s3 = batch_offset + 2u32 * i3;
-
-        let x0r = get!(SRC)[s0];
-        let x0i = get!(SRC)[s0 + 1u32];
-        let x1r = get!(SRC)[s1];
-        let x1i = get!(SRC)[s1 + 1u32];
-        let x2r = get!(SRC)[s2];
-        let x2i = get!(SRC)[s2 + 1u32];
-        let x3r = get!(SRC)[s3];
-        let x3i = get!(SRC)[s3 + 1u32];
-
-        let stride = quarter_n >> (r4_stage + r4_stage);
-        let tw1 = k * stride;
-        let tw2 = tw1 * 2u32;
-        let tw3 = tw1 * 3u32;
-
-        let wr1 = get!(TWIDDLE)[2u32 * tw1];
-        let wi1 = get!(TWIDDLE)[2u32 * tw1 + 1u32];
-        let wr2 = get!(TWIDDLE)[2u32 * tw2];
-        let wi2 = get!(TWIDDLE)[2u32 * tw2 + 1u32];
-        let wr3 = get!(TWIDDLE)[2u32 * tw3];
-        let wi3 = get!(TWIDDLE)[2u32 * tw3 + 1u32];
-
-        let br = wr1 * x1r - wi1 * x1i;
-        let bi = wr1 * x1i + wi1 * x1r;
-        let cr = wr2 * x2r - wi2 * x2i;
-        let ci = wr2 * x2i + wi2 * x2r;
-        let dr = wr3 * x3r - wi3 * x3i;
-        let di = wr3 * x3i + wi3 * x3r;
-
-        let o0 = j * four_p + k;
-        let o1 = o0 + p;
-        let o2 = o0 + p + p;
-        let o3 = o2 + p;
-
-        let d0 = batch_offset + 2u32 * o0;
-        let d1 = batch_offset + 2u32 * o1;
-        let d2 = batch_offset + 2u32 * o2;
-        let d3 = batch_offset + 2u32 * o3;
-
-        get_mut!(DST)[d0] = x0r + br + cr + dr;
-        get_mut!(DST)[d0 + 1u32] = x0i + bi + ci + di;
-        get_mut!(DST)[d1] = x0r + bi - cr - di;
-        get_mut!(DST)[d1 + 1u32] = x0i - br - ci + dr;
-        get_mut!(DST)[d2] = x0r - br + cr - dr;
-        get_mut!(DST)[d2 + 1u32] = x0i - bi + ci - di;
-        get_mut!(DST)[d3] = x0r - bi - cr + di;
-        get_mut!(DST)[d3 + 1u32] = x0i + br - ci - dr;
+        return;
     }
+
+    let quarter_n = n >> 2u;
+    if tid >= quarter_n {
+        return;
+    }
+
+    let r4_stage = stage / 2u;
+    let p = 1u << (r4_stage + r4_stage);
+    let four_p = p << 2u;
+
+    let k = tid % p;
+    let j = tid / p;
+
+    let i0 = j * p + k;
+    let i1 = i0 + quarter_n;
+    let i2 = i0 + quarter_n + quarter_n;
+    let i3 = i2 + quarter_n;
+
+    let s0 = batch_offset + 2u * i0;
+    let s1 = batch_offset + 2u * i1;
+    let s2 = batch_offset + 2u * i2;
+    let s3 = batch_offset + 2u * i3;
+
+    let x0r = SRC[s0];
+    let x0i = SRC[s0 + 1u];
+    let x1r = SRC[s1];
+    let x1i = SRC[s1 + 1u];
+    let x2r = SRC[s2];
+    let x2i = SRC[s2 + 1u];
+    let x3r = SRC[s3];
+    let x3i = SRC[s3 + 1u];
+
+    let stride = quarter_n >> (r4_stage + r4_stage);
+    let tw1 = k * stride;
+    let tw2 = tw1 * 2u;
+    let tw3 = tw1 * 3u;
+
+    let wr1 = TWIDDLE[2u * tw1];
+    let wi1 = TWIDDLE[2u * tw1 + 1u];
+    let wr2 = TWIDDLE[2u * tw2];
+    let wi2 = TWIDDLE[2u * tw2 + 1u];
+    let wr3 = TWIDDLE[2u * tw3];
+    let wi3 = TWIDDLE[2u * tw3 + 1u];
+
+    let br = wr1 * x1r - wi1 * x1i;
+    let bi = wr1 * x1i + wi1 * x1r;
+    let cr = wr2 * x2r - wi2 * x2i;
+    let ci = wr2 * x2i + wi2 * x2r;
+    let dr = wr3 * x3r - wi3 * x3i;
+    let di = wr3 * x3i + wi3 * x3r;
+
+    let o0 = j * four_p + k;
+    let o1 = o0 + p;
+    let o2 = o0 + p + p;
+    let o3 = o2 + p;
+
+    let d0 = batch_offset + 2u * o0;
+    let d1 = batch_offset + 2u * o1;
+    let d2 = batch_offset + 2u * o2;
+    let d3 = batch_offset + 2u * o3;
+
+    DST[d0] = x0r + br + cr + dr;
+    DST[d0 + 1u] = x0i + bi + ci + di;
+    DST[d1] = x0r + bi - cr - di;
+    DST[d1 + 1u] = x0i - br - ci + dr;
+    DST[d2] = x0r - br + cr - dr;
+    DST[d2 + 1u] = x0i - bi + ci - di;
+    DST[d3] = x0r - bi - cr + di;
+    DST[d3 + 1u] = x0i + br - ci - dr;
 }
+"#;
 
 pub struct Radix4Rival(pub GpuFft);
 
 impl Radix4Rival {
     pub fn new() -> Self {
-        let wgsl = radix4_kernel::WGSL_MODULE.wgsl_source().join("\n");
-        Self(GpuFft::with_shader(wgsl, "radix4_rival").unwrap())
+        Self(GpuFft::with_shader(RADIX4_WGSL.to_string(), "radix4_rival").unwrap())
     }
 }
 
