@@ -1,6 +1,6 @@
 # CI/CD Setup Guide
 
-This document explains how to set up and use the CI/CD pipeline for the wgls-rs-fft library.
+This document explains how to set up and use the CI/CD pipeline for the wgsl-fft library.
 
 ## 📁 Files Created
 
@@ -86,8 +86,8 @@ gh workflow run ci.yml
 Add these badges to your README.md:
 
 ```markdown
-[![CI Status](https://github.com/your-username/wgls-rs-fft/actions/workflows/ci.yml/badge.svg)](https://github.com/your-username/wgls-rs-fft/actions/workflows/ci.yml)
-[![Lint Status](https://github.com/your-username/wgls-rs-fft/actions/workflows/ci.yml/badge.svg?branch=main&event=push)](https://github.com/your-username/wgls-rs-fft/actions/workflows/ci.yml)
+[![CI Status](https://github.com/your-username/wgsl-fft/actions/workflows/ci.yml/badge.svg)](https://github.com/your-username/wgsl-fft/actions/workflows/ci.yml)
+[![Lint Status](https://github.com/your-username/wgsl-fft/actions/workflows/ci.yml/badge.svg?branch=main&event=push)](https://github.com/your-username/wgsl-fft/actions/workflows/ci.yml)
 ```
 
 ## 🔧 Customization

@@ -1,8 +1,8 @@
-# wgls-rs-fft
+# wgsl-fft
 
 GPU-accelerated FFT in Rust using [wgpu](https://github.com/gfx-rs/wgpu) compute shaders.
 
-Implements the **Stockham autosort** radix-2 FFT — a two-buffer ping-pong formulation
+Implements the FFT — a two-buffer ping-pong formulation
 where each stage reads from one buffer and writes to the other. This eliminates the separate
 bit-reversal pass and removes all inter-stage memory hazards, allowing the entire transform
 to run in a single GPU compute pass with one `queue.submit()` call.
@@ -16,7 +16,7 @@ The WGSL compute kernels are embedded as raw WGSL strings in [`src/shaders.rs`](
 
 ```toml
 [dependencies]
-wgls-rs-fft = "0.1"
+wgsl-fft = "0.1"
 num-complex  = "0.4"
 ```
 

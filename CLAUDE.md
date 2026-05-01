@@ -1,4 +1,4 @@
-# CLAUDE.md — wgls-rs-fft Coding Standards
+# CLAUDE.md — wgsl-fft Coding Standards
 
 ## Error Handling
 - Prefer `Result<T, E>` over `assert!` / `panic!` for validation at API boundaries
