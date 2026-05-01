@@ -1,11 +1,11 @@
 use num_complex::Complex;
 use std::time::Instant;
-use wgls_rs_fft::GpuFft;
+use wgsl_fft::GpuFft;
 
 #[cfg(feature = "cuda")]
-use wgls_rs_fft::CuFft;
+use wgsl_fft::CuFft;
 #[cfg(feature = "rocm")]
-use wgls_rs_fft::RocFft;
+use wgsl_fft::RocFft;
 
 fn main() {
     println!("FFT Implementation Comparison");
@@ -123,7 +123,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use num_complex::Complex;
-    use wgls_rs_fft::GpuFft;
+    use wgsl_fft::GpuFft;
 
     fn make_fft() -> GpuFft {
         GpuFft::new().expect("GPU required")
@@ -179,7 +179,7 @@ mod tests {
     #[cfg(feature = "cuda")]
     #[test]
     fn cufft_matches_wgpu_n256() {
-        use wgls_rs_fft::CuFft;
+        use wgsl_fft::CuFft;
         let n = 256;
         let cufft = match CuFft::new(n) {
             Ok(c) => c,

@@ -1,6 +1,6 @@
 use num_complex::Complex;
 use std::time::{Duration, Instant};
-use wgls_rs_fft::GpuFft;
+use wgsl_fft::GpuFft;
 
 fn make_input(n: usize) -> Vec<Complex<f32>> {
     (0..n)

@@ -133,7 +133,7 @@ Common customizations:
 🐳 Building Docker image with CUDA support...
 ✅ Docker image built successfully
 🚀 Running FFT rivalry leaderboard...
-=== WGSL-RS FFT RIVALRY LEADERBOARD ===
+=== WGSL-FFT RIVALRY LEADERBOARD ===
 🟢 NVIDIA GPU detected - cuFFT benchmarks will be included
 --- N = 256 ---
                   Implementation |    Batch |     MSamples/s |     GFLOPS |   Status

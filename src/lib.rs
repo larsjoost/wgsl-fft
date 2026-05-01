@@ -277,7 +277,7 @@ impl GpuFft {
     /// # Examples
     ///
     /// ```no_run
-    /// use wgls_rs_fft::GpuFft;
+    /// use wgsl_fft::GpuFft;
     ///
     /// let fft = GpuFft::new().expect("GPU required");
     /// // Now use fft.fft() and fft.ifft()
@@ -414,7 +414,7 @@ impl GpuFft {
     /// # Examples
     ///
     /// ```no_run
-    /// use wgls_rs_fft::GpuFft;
+    /// use wgsl_fft::GpuFft;
     /// use num_complex::Complex;
     ///
     /// let fft = GpuFft::new().expect("GPU or CPU fallback required");
@@ -464,7 +464,7 @@ impl GpuFft {
     /// # Examples
     ///
     /// ```no_run
-    /// use wgls_rs_fft::GpuFft;
+    /// use wgsl_fft::GpuFft;
     /// use num_complex::Complex;
     ///
     /// let fft = GpuFft::new().expect("GPU or CPU fallback required");
@@ -487,20 +487,7 @@ impl GpuFft {
         self.transform_batch_internal(inputs, true)
     }
 
-    /// Internal transform implementation that handles both FFT and IFFT.
-    ///
-    /// When `inverse` is true, computes IFFT (with conjugation and 1/N scaling).
-    /// When `inverse` is false, computes standard FFT.
-    fn transform_internal(
-        &self,
-        input: &[Complex<f32>],
-        inverse: bool,
-    ) -> Result<Vec<Complex<f32>>, Box<dyn std::error::Error>> {
-        // Use batch processing even for single FFT for consistency
-        let batch_input = vec![input.to_vec()];
-        let batch_result = self.transform_batch_internal(&batch_input, inverse)?;
-        Ok(batch_result.into_iter().next().unwrap())
-    }
+
 
     /// Validate that the input size is a power of two and non-zero.
     fn validate_input_size(&self, n: usize) -> Result<(), Box<dyn std::error::Error>> {

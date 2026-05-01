@@ -102,7 +102,7 @@ When running successfully, you should see:
 
 ```
 🟢 NVIDIA GPU detected - cuFFT benchmarks will be included
-=== WGSL-RS FFT RIVALRY LEADERBOARD ===
+=== WGSL-FFT RIVALRY LEADERBOARD ===
 
 --- N = 256 ---
                   Implementation |    Batch |     MSamples/s |     GFLOPS |   Status

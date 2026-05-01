@@ -3,7 +3,6 @@ use std::cell::RefCell;
 use std::num::NonZeroU64;
 
 use num_complex::Complex;
-use wgsl_rs::wgsl;
 
 use crate::FftExecutor;
 
@@ -256,162 +255,154 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 //
 // Correct radix-4 DIT butterfly (b = W_tw1·x1, c = W_tw2·x2, d = W_tw3·x3):
 //   y0 = x0 + b + c + d
-//   y1 = x0 - i·b - c + i·d  →  re: x0r+bi-cr-di,  im: x0i-br-ci+dr
+//   y1 = x0 - i·b - c + i·d  ->  re: x0r+bi-cr-di,  im: x0i-br-ci+dr
 //   y2 = x0 - b + c - d
-//   y3 = x0 + i·b - c - i·d  →  re: x0r-bi-cr+di,  im: x0i+br-ci-dr
+//   y3 = x0 + i·b - c - i·d  ->  re: x0r-bi-cr+di,  im: x0i+br-ci-dr
 //
 // Output indices (Stockham autosort):
 //   o0 = j*4p+k,  o1 = o0+p,  o2 = o0+2p,  o3 = o0+3p
-#[wgsl]
-pub mod codex_r4_kernel {
-    use wgsl_rs::std::*;
+const CODEX_R4_WGSL: &str = r#"
+@group(0) @binding(0) var<uniform> U: vec4<u32>;
+@group(0) @binding(1) var<storage, read_write> SRC: array<f32>;
+@group(0) @binding(2) var<storage, read_write> DST: array<f32>;
+@group(0) @binding(3) var<storage, read> TWIDDLE: array<f32>;
 
-    uniform!(group(0), binding(0), U: Vec4u);
-    storage!(group(0), binding(1), read_write, SRC: RuntimeArray<f32>);
-    storage!(group(0), binding(2), read_write, DST: RuntimeArray<f32>);
-    storage!(group(0), binding(3), TWIDDLE: RuntimeArray<f32>);
-
-    #[compute]
-    #[workgroup_size(256, 1, 1)]
-    pub fn main(#[builtin(global_invocation_id)] gid: Vec3u) {
-        let tid = gid.x;
-        let batch_id = gid.y;
-        let n = get!(U).x;
-        let quarter_n = n >> 2u32;
-        if tid >= quarter_n {
-            return;
-        }
-
-        let p = get!(U).y;
-        let tw_stride = get!(U).z;
-        let four_p = p << 2u32;
-
-        let k = tid % p;
-        let j = tid / p;
-
-        let batch_offset = batch_id * n * 2u32;
-
-        let i0 = j * p + k;
-        let i1 = i0 + quarter_n;
-        let i2 = i0 + quarter_n + quarter_n;
-        let i3 = i2 + quarter_n;
-
-        let s0 = batch_offset + 2u32 * i0;
-        let s1 = batch_offset + 2u32 * i1;
-        let s2 = batch_offset + 2u32 * i2;
-        let s3 = batch_offset + 2u32 * i3;
-
-        let x0r = get!(SRC)[s0];
-        let x0i = get!(SRC)[s0 + 1u32];
-        let x1r = get!(SRC)[s1];
-        let x1i = get!(SRC)[s1 + 1u32];
-        let x2r = get!(SRC)[s2];
-        let x2i = get!(SRC)[s2 + 1u32];
-        let x3r = get!(SRC)[s3];
-        let x3i = get!(SRC)[s3 + 1u32];
-
-        let tw1 = k * tw_stride;
-        let tw2 = tw1 * 2u32;
-        let tw3 = tw1 * 3u32;
-
-        let wr1 = get!(TWIDDLE)[2u32 * tw1];
-        let wi1 = get!(TWIDDLE)[2u32 * tw1 + 1u32];
-        let wr2 = get!(TWIDDLE)[2u32 * tw2];
-        let wi2 = get!(TWIDDLE)[2u32 * tw2 + 1u32];
-        let wr3 = get!(TWIDDLE)[2u32 * tw3];
-        let wi3 = get!(TWIDDLE)[2u32 * tw3 + 1u32];
-
-        let br = wr1 * x1r - wi1 * x1i;
-        let bi = wr1 * x1i + wi1 * x1r;
-        let cr = wr2 * x2r - wi2 * x2i;
-        let ci = wr2 * x2i + wi2 * x2r;
-        let dr = wr3 * x3r - wi3 * x3i;
-        let di = wr3 * x3i + wi3 * x3r;
-
-        let o0 = j * four_p + k;
-        let o1 = o0 + p;
-        let o2 = o0 + p + p;
-        let o3 = o2 + p;
-
-        let d0 = batch_offset + 2u32 * o0;
-        let d1 = batch_offset + 2u32 * o1;
-        let d2 = batch_offset + 2u32 * o2;
-        let d3 = batch_offset + 2u32 * o3;
-
-        get_mut!(DST)[d0] = x0r + br + cr + dr;
-        get_mut!(DST)[d0 + 1u32] = x0i + bi + ci + di;
-        get_mut!(DST)[d1] = x0r + bi - cr - di;
-        get_mut!(DST)[d1 + 1u32] = x0i - br - ci + dr;
-        get_mut!(DST)[d2] = x0r - br + cr - dr;
-        get_mut!(DST)[d2 + 1u32] = x0i - bi + ci - di;
-        get_mut!(DST)[d3] = x0r - bi - cr + di;
-        get_mut!(DST)[d3 + 1u32] = x0i + br - ci - dr;
+@compute @workgroup_size(256, 1, 1)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let tid = gid.x;
+    let batch_id = gid.y;
+    let n = U.x;
+    let quarter_n = n >> 2u;
+    if tid >= quarter_n {
+        return;
     }
-}
 
-// ── WGSL: Stockham Radix-2 (finalisation for odd log₂N) ─────────────────────
+    let p = U.y;
+    let tw_stride = U.z;
+    let four_p = p << 2u;
+
+    let k = tid % p;
+    let j = tid / p;
+
+    let batch_offset = batch_id * n * 2u;
+
+    let i0 = j * p + k;
+    let i1 = i0 + quarter_n;
+    let i2 = i0 + quarter_n + quarter_n;
+    let i3 = i2 + quarter_n;
+
+    let s0 = batch_offset + 2u * i0;
+    let s1 = batch_offset + 2u * i1;
+    let s2 = batch_offset + 2u * i2;
+    let s3 = batch_offset + 2u * i3;
+
+    let x0r = SRC[s0];
+    let x0i = SRC[s0 + 1u];
+    let x1r = SRC[s1];
+    let x1i = SRC[s1 + 1u];
+    let x2r = SRC[s2];
+    let x2i = SRC[s2 + 1u];
+    let x3r = SRC[s3];
+    let x3i = SRC[s3 + 1u];
+
+    let tw1 = k * tw_stride;
+    let tw2 = tw1 * 2u;
+    let tw3 = tw1 * 3u;
+
+    let wr1 = TWIDDLE[2u * tw1];
+    let wi1 = TWIDDLE[2u * tw1 + 1u];
+    let wr2 = TWIDDLE[2u * tw2];
+    let wi2 = TWIDDLE[2u * tw2 + 1u];
+    let wr3 = TWIDDLE[2u * tw3];
+    let wi3 = TWIDDLE[2u * tw3 + 1u];
+
+    let br = wr1 * x1r - wi1 * x1i;
+    let bi = wr1 * x1i + wi1 * x1r;
+    let cr = wr2 * x2r - wi2 * x2i;
+    let ci = wr2 * x2i + wi2 * x2r;
+    let dr = wr3 * x3r - wi3 * x3i;
+    let di = wr3 * x3i + wi3 * x3r;
+
+    let o0 = j * four_p + k;
+    let o1 = o0 + p;
+    let o2 = o0 + p + p;
+    let o3 = o2 + p;
+
+    let d0 = batch_offset + 2u * o0;
+    let d1 = batch_offset + 2u * o1;
+    let d2 = batch_offset + 2u * o2;
+    let d3 = batch_offset + 2u * o3;
+
+    DST[d0] = x0r + br + cr + dr;
+    DST[d0 + 1u] = x0i + bi + ci + di;
+    DST[d1] = x0r + bi - cr - di;
+    DST[d1 + 1u] = x0i - br - ci + dr;
+    DST[d2] = x0r - br + cr - dr;
+    DST[d2 + 1u] = x0i - bi + ci - di;
+    DST[d3] = x0r - bi - cr + di;
+    DST[d3 + 1u] = x0i + br - ci - dr;
+}
+"#;
+
+// ── WGSL: Stockham Radix-2 (finalisation for odd log2N) ─────────────────────
 //
 // Identical to the baseline stockham kernel, but `p` and `tw_stride` are
 // passed directly in the uniform instead of being reconstructed from a stage id.
-#[wgsl]
-pub mod codex_r2_kernel {
-    use wgsl_rs::std::*;
+const CODEX_R2_WGSL: &str = r#"
+@group(0) @binding(0) var<uniform> U: vec4<u32>;
+@group(0) @binding(1) var<storage, read_write> SRC: array<f32>;
+@group(0) @binding(2) var<storage, read_write> DST: array<f32>;
+@group(0) @binding(3) var<storage, read> TWIDDLE: array<f32>;
 
-    uniform!(group(0), binding(0), U: Vec4u);
-    storage!(group(0), binding(1), read_write, SRC: RuntimeArray<f32>);
-    storage!(group(0), binding(2), read_write, DST: RuntimeArray<f32>);
-    storage!(group(0), binding(3), TWIDDLE: RuntimeArray<f32>);
-
-    #[compute]
-    #[workgroup_size(256, 1, 1)]
-    pub fn main(#[builtin(global_invocation_id)] gid: Vec3u) {
-        let tid = gid.x;
-        let batch_id = gid.y;
-        let n = get!(U).x;
-        let half_n = n >> 1u32;
-        if tid >= half_n {
-            return;
-        }
-
-        let p = get!(U).y;
-        let tw_stride = get!(U).z;
-        let two_p = p + p;
-
-        let k = tid % p;
-        let j = tid / p;
-
-        let batch_offset = batch_id * n * 2u32;
-
-        let i1 = j * p + k;
-        let i2 = i1 + half_n;
-
-        let src1 = batch_offset + 2u32 * i1;
-        let src2 = batch_offset + 2u32 * i2;
-
-        let re1 = get!(SRC)[src1];
-        let im1 = get!(SRC)[src1 + 1u32];
-        let re2 = get!(SRC)[src2];
-        let im2 = get!(SRC)[src2 + 1u32];
-
-        let twiddle_idx = k * tw_stride;
-        let wr = get!(TWIDDLE)[2u32 * twiddle_idx];
-        let wi = get!(TWIDDLE)[2u32 * twiddle_idx + 1u32];
-
-        let tr = wr * re2 - wi * im2;
-        let ti = wr * im2 + wi * re2;
-
-        let out1 = j * two_p + k;
-        let out2 = out1 + p;
-
-        let dst1 = batch_offset + 2u32 * out1;
-        let dst2 = batch_offset + 2u32 * out2;
-
-        get_mut!(DST)[dst1] = re1 + tr;
-        get_mut!(DST)[dst1 + 1u32] = im1 + ti;
-        get_mut!(DST)[dst2] = re1 - tr;
-        get_mut!(DST)[dst2 + 1u32] = im1 - ti;
+@compute @workgroup_size(256, 1, 1)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let tid = gid.x;
+    let batch_id = gid.y;
+    let n = U.x;
+    let half_n = n >> 1u;
+    if tid >= half_n {
+        return;
     }
+
+    let p = U.y;
+    let tw_stride = U.z;
+    let two_p = p + p;
+
+    let k = tid % p;
+    let j = tid / p;
+
+    let batch_offset = batch_id * n * 2u;
+
+    let i1 = j * p + k;
+    let i2 = i1 + half_n;
+
+    let src1 = batch_offset + 2u * i1;
+    let src2 = batch_offset + 2u * i2;
+
+    let re1 = SRC[src1];
+    let im1 = SRC[src1 + 1u];
+    let re2 = SRC[src2];
+    let im2 = SRC[src2 + 1u];
+
+    let twiddle_idx = k * tw_stride;
+    let wr = TWIDDLE[2u * twiddle_idx];
+    let wi = TWIDDLE[2u * twiddle_idx + 1u];
+
+    let tr = wr * re2 - wi * im2;
+    let ti = wr * im2 + wi * re2;
+
+    let out1 = j * two_p + k;
+    let out2 = out1 + p;
+
+    let dst1 = batch_offset + 2u * out1;
+    let dst2 = batch_offset + 2u * out2;
+
+    DST[dst1] = re1 + tr;
+    DST[dst1 + 1u] = im1 + ti;
+    DST[dst2] = re1 - tr;
+    DST[dst2 + 1u] = im1 - ti;
 }
+"#;
 
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
@@ -488,14 +479,8 @@ impl CodexFft {
 
         let pipeline_local_256 = compile(CODEX_LOCAL_256_WGSL.to_string(), "codex_local_256");
         let pipeline_r8 = compile(CODEX_R8_WGSL.to_string(), "codex_r8");
-        let pipeline_r4 = compile(
-            codex_r4_kernel::WGSL_MODULE.wgsl_source().join("\n"),
-            "codex_r4",
-        );
-        let pipeline_r2 = compile(
-            codex_r2_kernel::WGSL_MODULE.wgsl_source().join("\n"),
-            "codex_r2",
-        );
+        let pipeline_r4 = compile(CODEX_R4_WGSL.to_string(), "codex_r4");
+        let pipeline_r2 = compile(CODEX_R2_WGSL.to_string(), "codex_r2");
 
         Self {
             device,

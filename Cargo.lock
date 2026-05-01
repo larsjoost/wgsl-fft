@@ -1391,20 +1391,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "wgls-rs-fft"
-version = "0.0.0-reserved"
-dependencies = [
- "bytemuck",
- "criterion",
- "cudarc",
- "num-complex",
- "pollster",
- "rocm-rs",
- "rustfft",
- "wgpu",
-]
-
-[[package]]
 name = "wgpu"
 version = "29.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1569,6 +1555,20 @@ dependencies = [
  "log",
  "raw-window-handle",
  "web-sys",
+]
+
+[[package]]
+name = "wgsl-fft"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "criterion",
+ "cudarc",
+ "num-complex",
+ "pollster",
+ "rocm-rs",
+ "rustfft",
+ "wgpu",
 ]
 
 [[package]]

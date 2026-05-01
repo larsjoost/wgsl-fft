@@ -1,6 +1,6 @@
 use num_complex::Complex;
 use std::time::Instant;
-use wgls_rs_fft::GpuFft;
+use wgsl_fft::GpuFft;
 
 fn main() {
     let fft = GpuFft::new().expect("Failed to create FFT instance");
@@ -51,7 +51,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use num_complex::Complex;
-    use wgls_rs_fft::GpuFft;
+    use wgsl_fft::GpuFft;
 
     fn impulse(n: usize) -> Vec<Complex<f32>> {
         let mut v = vec![Complex::new(0.0f32, 0.0); n];

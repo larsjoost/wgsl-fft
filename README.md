@@ -23,7 +23,7 @@ num-complex  = "0.4"
 ### Forward FFT (Batch Processing)
 
 ```rust
-use wgls_rs_fft::GpuFft;
+use wgsl_fft::GpuFft;
 use num_complex::Complex;
 
 // Create FFT instance - returns Result since GPU might not be available

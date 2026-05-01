@@ -4,7 +4,7 @@
 //! in an environment that mimics GitHub Actions as closely as possible.
 
 use num_complex::Complex;
-use wgls_rs_fft::GpuFft;
+use wgsl_fft::GpuFft;
 
 #[test]
 fn test_ci_minimal() {

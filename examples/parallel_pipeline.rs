@@ -13,7 +13,7 @@
 //! Each slot owns an independent set of GPU buffers, so the GPU's async DMA engine can overlap
 //! host-device copies of one slot with compute work from another slot.
 //!
-//! FFT and IFFT use `wgls_rs_fft::R4_WGSL` / `R2_WGSL` — the Stockham Radix-4/2 baseline from
+//! FFT and IFFT use `wgsl_fft::R4_WGSL` / `R2_WGSL` — the Stockham Radix-4/2 baseline from
 //! `src/shaders.rs`.  IFFT is implemented by supplying an inverse twiddle table
 //! (e^{+2πij/N}) to the same kernels; a `SCALE_WGSL` pass applies the 1/N factor afterwards.
 
@@ -22,7 +22,7 @@ use std::time::Instant;
 
 use bytemuck;
 use num_complex::Complex;
-use wgls_rs_fft::{R2_WGSL, R4_WGSL};
+use wgsl_fft::{R2_WGSL, R4_WGSL};
 
 // ── Inline WGSL shaders for the three non-FFT stages ─────────────────────────
 

@@ -8,7 +8,7 @@
 
 use num_complex::Complex;
 use std::time::Instant;
-use wgls_rs_fft::GpuFft;
+use wgsl_fft::GpuFft;
 
 /// Apply a Hann window function to the input signal
 fn apply_hann_window(signal: &mut [Complex<f32>]) {

@@ -1,5 +1,5 @@
 use num_complex::Complex;
-use wgls_rs_fft::GpuFft;
+use wgsl_fft::GpuFft;
 
 mod test_utils;
 use test_utils::*;

@@ -1,5 +1,5 @@
 use std::env;
-use wgls_rs_fft::{
+use wgsl_fft::{
     benchmark::{benchmark_rival, ValidationOutcome, MAX_TOTAL_SAMPLES},
     FftExecutor, GpuFft,
 };
@@ -21,9 +21,9 @@ fn main() {
 
     let mut rivals: Vec<Box<dyn FftExecutor>> = Vec::new();
     rivals.push(Box::new(GpuFft::new().expect("Failed to init WebGPU")));
-    rivals.push(Box::new(wgls_rs_fft::rivals::radix4::Radix4Rival::new()));
-    rivals.push(Box::new(wgls_rs_fft::rivals::claude::ClaudeFft::new()));
-    rivals.push(Box::new(wgls_rs_fft::rivals::gemini::GeminiFft::new()));
+    rivals.push(Box::new(wgsl_fft::rivals::radix4::Radix4Rival::new()));
+    rivals.push(Box::new(wgsl_fft::rivals::claude::ClaudeFft::new()));
+    rivals.push(Box::new(wgsl_fft::rivals::gemini::GeminiFft::new()));
 
     let batch_sizes = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024];
 
@@ -46,7 +46,7 @@ fn main() {
         let mut best_batch = 0;
 
         for &batch in &batch_sizes {
-            if n * batch > wgls_rs_fft::benchmark::MAX_TOTAL_SAMPLES {
+            if n * batch > wgsl_fft::benchmark::MAX_TOTAL_SAMPLES {
                 continue;
             }
 
@@ -119,7 +119,7 @@ mod tests {
     #[test]
     fn claude_rival_passes_validation_n256() {
         let reference = GpuFft::new().expect("GPU required");
-        let rival = wgls_rs_fft::rivals::claude::ClaudeFft::new();
+        let rival = wgsl_fft::rivals::claude::ClaudeFft::new();
         let result = benchmark_rival(&rival, &reference, 256, 4);
         assert!(
             matches!(result.validation, ValidationOutcome::Pass),

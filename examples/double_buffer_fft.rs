@@ -1,4 +1,4 @@
-//! Double-buffered FFT pipeline using [`wgls_rs_fft::GpuFft`].
+//! Double-buffered FFT pipeline using [`wgsl_fft::GpuFft`].
 //!
 //! Demonstrates how to pipeline GPU work across consecutive batches with a
 //! single compute pipeline and two independent buffer sets (slots).
@@ -31,7 +31,7 @@ use std::time::Instant;
 
 use bytemuck;
 use num_complex::Complex;
-use wgls_rs_fft::GpuFft;
+use wgsl_fft::GpuFft;
 
 // ── Buffer slot ───────────────────────────────────────────────────────────────
 

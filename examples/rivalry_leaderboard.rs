@@ -1,14 +1,14 @@
 use std::process::Command;
-use wgls_rs_fft::{
+use wgsl_fft::{
     benchmark::{benchmark_gpu_pipeline, validate_rival, ValidationOutcome, MAX_TOTAL_SAMPLES},
     FftExecutor, GpuFft,
 };
 
 #[cfg(feature = "cuda")]
-use wgls_rs_fft::CuFft;
+use wgsl_fft::CuFft;
 
 #[cfg(feature = "hipfft")]
-use wgls_rs_fft::HipFft;
+use wgsl_fft::HipFft;
 
 /// Detect if NVIDIA GPU is available for cuFFT
 #[cfg(feature = "cuda")]
@@ -52,7 +52,7 @@ fn is_host_nvidia_present() -> bool {
 }
 
 fn main() {
-    println!("\n=== WGSL-RS FFT RIVALRY LEADERBOARD ===");
+    println!("\n=== WGSL-FFT RIVALRY LEADERBOARD ===");
     println!("Measuring complete GPU pipeline performance (host-to-device + GPU compute + device-to-host)");
 
     // Distinguish host GPU detection from cuFFT runtime availability.
@@ -85,19 +85,17 @@ fn main() {
 
     let mut rivals: Vec<Box<dyn FftExecutor>> = Vec::new();
     rivals.push(Box::new(GpuFft::new().expect("Failed to init WebGPU")));
-    rivals.push(Box::new(wgls_rs_fft::rivals::radix4::Radix4Rival::new()));
+    rivals.push(Box::new(wgsl_fft::rivals::radix4::Radix4Rival::new()));
     rivals.push(Box::new(
-        wgls_rs_fft::rivals::radix4_proper::Radix4ProperFft::new(),
+        wgsl_fft::rivals::radix4_proper::Radix4ProperFft::new(),
     ));
-    rivals.push(Box::new(wgls_rs_fft::rivals::claude::ClaudeFft::new()));
-    // rivals.push(Box::new(wgls_rs_fft::rivals::codex::CodexFft::new()));
+    rivals.push(Box::new(wgsl_fft::rivals::claude::ClaudeFft::new()));
+    rivals.push(Box::new(wgsl_fft::rivals::codex::CodexFft::new()));
+    rivals.push(Box::new(wgsl_fft::rivals::devstral_2::Devstral2Fft::new()));
+    rivals.push(Box::new(wgsl_fft::rivals::gemini::GeminiFft::new()));
     rivals.push(Box::new(
-        wgls_rs_fft::rivals::devstral_2::Devstral2Fft::new(),
+        wgsl_fft::rivals::mistral_vibe::MistralVibeFft::new(),
     ));
-    rivals.push(Box::new(wgls_rs_fft::rivals::gemini::GeminiFft::new()));
-    // rivals.push(Box::new(
-    //     wgls_rs_fft::rivals::mistral_vibe::MistralVibeFft::new(),
-    // ));
 
     #[cfg(feature = "cuda")]
     if let Ok(cufft) = CuFft::new(1024) {

@@ -1,4 +1,4 @@
-use wgls_rs_fft::{
+use wgsl_fft::{
     benchmark::{benchmark_gpu_only, benchmark_rival, MAX_TOTAL_SAMPLES},
     GpuFft,
 };

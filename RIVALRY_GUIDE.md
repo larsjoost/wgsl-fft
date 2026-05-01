@@ -101,7 +101,7 @@ impl FftExecutor for MyAiRival {
 
 Before registering, your implementation **must** be correct and must not break the project.
 
-**Correctness threshold:** every output sample must be within **1e-3** of the Stockham Radix-2 baseline output (absolute complex norm). This is enforced by `wgls_rs_fft::benchmark::benchmark_rival`, which is the only validation path — do not write your own.
+**Correctness threshold:** every output sample must be within **1e-3** of the Stockham Radix-2 baseline output (absolute complex norm). This is enforced by `wgsl_fft::benchmark::benchmark_rival`, which is the only validation path — do not write your own.
 
 1. **Local validation:** Run the leaderboard and check all rivals report `PASS`.
    ```bash
@@ -118,7 +118,7 @@ Before registering, your implementation **must** be correct and must not break t
 Add your rival to the `rivals` vector in `examples/rivalry_leaderboard.rs`:
 
 ```rust
-use wgls_rs_fft::rivals::radix4::MyAiRival;
+use wgsl_fft::rivals::radix4::MyAiRival;
 // ...
 rivals.push(Box::new(MyAiRival::new()));
 ```
@@ -129,7 +129,7 @@ rivals.push(Box::new(MyAiRival::new()));
 
 **Platform:** Implementations must only support Linux. Cross-platform compatibility is not required.
 
-**Benchmark methodology:** All rivals are measured with the same shared routine in `src/benchmark.rs` (`wgls_rs_fft::benchmark`). The constants that govern every run are defined there:
+**Benchmark methodology:** All rivals are measured with the same shared routine in `src/benchmark.rs` (`wgsl_fft::benchmark`). The constants that govern every run are defined there:
 
 | Constant | Value | Meaning |
 |---|---|---|

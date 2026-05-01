@@ -4,7 +4,7 @@
 //! to process multiple FFTs efficiently.
 
 use num_complex::Complex;
-use wgls_rs_fft::GpuFft;
+use wgsl_fft::GpuFft;
 
 fn main() {
     println!("🚀 Testing Batch Processing Implementation");
@@ -118,7 +118,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use num_complex::Complex;
-    use wgls_rs_fft::GpuFft;
+    use wgsl_fft::GpuFft;
 
     fn make_fft() -> GpuFft {
         GpuFft::new().expect("GPU required")

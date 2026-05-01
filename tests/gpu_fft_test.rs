@@ -1,6 +1,6 @@
 use num_complex::Complex;
 use rustfft::FftPlanner;
-use wgls_rs_fft::GpuFft;
+use wgsl_fft::GpuFft;
 
 const N: usize = 1024;
 const EPSILON: f32 = 1e-3;

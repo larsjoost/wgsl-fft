@@ -4,7 +4,7 @@
 //! and improve test maintainability following DRY and SOLID principles.
 
 use num_complex::Complex;
-use wgls_rs_fft::GpuFft;
+use wgsl_fft::GpuFft;
 
 /// Create a new GPU FFT instance for testing
 ///

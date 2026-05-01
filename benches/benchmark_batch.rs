@@ -1,6 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use num_complex::Complex;
-use wgls_rs_fft::GpuFft;
+use wgsl_fft::GpuFft;
 
 fn benchmark_batch_processing(c: &mut Criterion) {
     let fft = GpuFft::new().expect("Failed to create FFT instance");
