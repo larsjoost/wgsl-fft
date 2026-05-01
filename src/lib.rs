@@ -487,8 +487,6 @@ impl GpuFft {
         self.transform_batch_internal(inputs, true)
     }
 
-
-
     /// Validate that the input size is a power of two and non-zero.
     fn validate_input_size(&self, n: usize) -> Result<(), Box<dyn std::error::Error>> {
         if !n.is_power_of_two() || n == 0 {

@@ -1,12 +1,12 @@
 #!/bin/bash
 
-# Focused CI Test Script for wgls-rs-fft
+# Focused CI Test Script for wgsl-fft
 # This script runs only the core tests that are currently working
 # Usage: ./scripts/ci_test_focused.sh
 
 set -e  # Exit immediately if any command fails
 
-echo "🚀 Starting focused CI test suite for wgls-rs-fft"
+echo "🚀 Starting focused CI test suite for wgsl-fft"
 echo "=================================================="
 
 # Store start time

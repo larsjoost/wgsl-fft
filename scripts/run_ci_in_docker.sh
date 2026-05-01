@@ -5,12 +5,12 @@
 
 set -e  # Exit immediately if any command fails
 
-docker build -t wgls-rs-fft-ci -f Dockerfile.ci .
+docker build -t wgsl-fft-ci -f Dockerfile.ci .
 
 docker run --rm \
     -v $(pwd):/workspace \
     -w /workspace \
     -e RUST_BACKTRACE=1 \
     -e CARGO_TERM_COLOR=always \
-    wgls-rs-fft-ci \
+    wgsl-fft-ci \
     ./scripts/ci_test.sh

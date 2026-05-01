@@ -1,4 +1,4 @@
-# Dockerfile for CI testing of wgls-rs-fft
+# Dockerfile for CI testing of wgsl-fft
 # This provides a consistent environment for both local and GitHub CI testing
 
 FROM docker.io/library/rust:latest

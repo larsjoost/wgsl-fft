@@ -1,12 +1,12 @@
 #!/bin/bash
 
-# CI Test Script for wgls-rs-fft
+# CI Test Script for wgsl-fft
 # This script runs all the tests that GitHub CI would run
 # Usage: ./scripts/ci_test.sh
 
 set -e  # Exit immediately if any command fails
 
-echo "🚀 Starting CI test suite for wgls-rs-fft"
+echo "🚀 Starting CI test suite for wgsl-fft"
 echo "=========================================="
 
 # Store start time
