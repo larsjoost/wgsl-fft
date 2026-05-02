@@ -12,7 +12,6 @@ use wgpu::{
     BufferBindingType, ComputePipeline, Device, ShaderStages,
 };
 
-use crate::buffer::{PingPongBuffers, PingPongState};
 use crate::shaders;
 
 /// Direction for FFT operations
@@ -93,7 +92,7 @@ fn fft_make_pipeline(
 /// let queue  = fft.queue();
 ///
 /// let n: usize = 1024;
-/// // allocate input_buf, scratch0, scratch1 as STORAGE buffers of size n * 8 bytes
+/// // allocate input_buf and output_buf as STORAGE buffers of size n * 8 bytes (scratch is managed internally)
 /// # let input_buf: wgpu::Buffer = unimplemented!();
 /// # let output_buf: wgpu::Buffer = unimplemented!();
 /// let mut encoder = device.create_command_encoder(&Default::default());
@@ -347,69 +346,5 @@ impl FftPipelines {
             pass.set_bind_group(0, &bg, &[]);
             pass.dispatch_workgroups((n as u32).div_ceil(256), 1, 1);
         }
-    }
-
-    // New simplified API for ping-pong buffer integration
-
-    /// Create a ping-pong buffer pair for use with the ping-pong API.
-    /// Each buffer has the specified size in bytes.
-    pub fn create_pingpong(&self, size: u64, label: &str) -> PingPongBuffers {
-        PingPongBuffers::new(&self.device, size, label)
-    }
-
-    /// Encode an FFT using a ping-pong buffer pair with explicit state control.
-    ///
-    /// This method uses the provided ping-pong buffers for all intermediate storage.
-    /// The FFT result is written to the write buffer determined by `state`.
-    ///
-    /// For multi-stage pipelines: after calling this, toggle the state and pass it
-    /// to the next stage, which will read from the buffer this stage wrote to.
-    ///
-    /// # Example
-    /// ```ignore
-    /// use wgsl_fft::{FftPipelines, FftDirection, PingPongState, PingPongBuffers};
-    ///
-    /// let fft = FftPipelines::new()?;
-    /// let mut state = PingPongState::Read0Write1;
-    /// let pp = fft.create_pingpong(size, "my_pipeline");
-    /// let input_buf = /* ... */;
-    ///
-    /// let mut encoder = fft.device().create_command_encoder(&Default::default());
-    ///
-    /// // Stage 1: FFT forward - reads from A (via input copy), writes to B
-    /// fft.encode_fft_with_pingpong(&mut encoder, n, FftDirection::Forward, state, &pp, input_buf);
-    /// state.toggle(); // Now: Read1Write0
-    ///
-    /// // Stage 2: Multiply - reads from B, writes to A
-    /// // (would use similar API for multiply stage)
-    /// state.toggle(); // Now: Read0Write1
-    ///
-    /// // Stage 3: IFFT - reads from A, writes to B
-    /// fft.encode_fft_with_pingpong(&mut encoder, n, FftDirection::Inverse, state, &pp, input_buf);
-    /// ```
-    pub fn encode_fft_with_pingpong(
-        &self,
-        encoder: &mut wgpu::CommandEncoder,
-        n: usize,
-        direction: FftDirection,
-        state: PingPongState,
-        ping_pong: &PingPongBuffers,
-        input_buf: &wgpu::Buffer,
-    ) {
-        let (_, write_buf) = ping_pong.get(state);
-        self.encode_fft(encoder, n, direction, input_buf, write_buf);
-    }
-
-    /// Encode normalize on the write buffer of a ping-pong pair.
-    /// Call this after IFFT, passing the same state that was used for the IFFT.
-    pub fn encode_normalize_with_pingpong(
-        &self,
-        encoder: &mut wgpu::CommandEncoder,
-        n: usize,
-        state: PingPongState,
-        ping_pong: &PingPongBuffers,
-    ) {
-        let (_, write_buf) = ping_pong.get(state);
-        self.encode_normalize(encoder, n, write_buf);
     }
 }
