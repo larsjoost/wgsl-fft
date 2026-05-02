@@ -6,12 +6,12 @@
 use num_complex::Complex;
 use wgsl_fft::GpuFft;
 
+static GPU_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[test]
 fn test_ci_minimal() {
-    // This test verifies the most basic functionality
-    // It should work in CI environments
+    let _lock = GPU_LOCK.lock().unwrap();
 
-    // Check if GPU is available first
     if !GpuFft::is_gpu_available() {
         println!("CI DEBUG: No GPU available - using CPU fallback would be needed");
         return; // Skip test if no GPU
@@ -75,7 +75,7 @@ fn test_ci_minimal() {
 
 #[test]
 fn test_ci_performance() {
-    // Performance test that should work in CI
+    let _lock = GPU_LOCK.lock().unwrap();
     use std::time::Instant;
 
     if !GpuFft::is_gpu_available() {

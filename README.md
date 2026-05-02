@@ -94,6 +94,22 @@ for (i, spectrum) in spectra.iter().enumerate() {
 - Input length must be a **power of two** and non-empty.
 - All vectors in a batch must have the same length.
 
+## Module Structure
+
+The crate is organized into the following modules:
+
+| Module | Purpose |
+|--------|---------|
+| `fft` | Main FFT implementation (`GpuFft`, `FftExecutor`, `SizeCache`) |
+| `pipelines` | Pre-compiled FFT pipelines (`FftPipelines`, `FftDirection`) |
+| `buffer` | Ping-pong buffer infrastructure (`PingPongState`, `PingPongBuffers`) |
+| `pipeline` | Streaming pipeline builder and compute stages |
+| `shaders` | WGSL compute shader source code |
+| `benchmark` | Benchmarking utilities |
+| `rivals` | Alternative FFT implementations for comparison |
+
+All public types are re-exported from the crate root, so you can use `wgsl_fft::GpuFft` directly.
+
 ## Algorithm
 
 **Stockham autosort** formulation with single-pass execution:

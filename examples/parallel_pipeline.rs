@@ -22,7 +22,7 @@ use std::time::Instant;
 
 use bytemuck;
 use num_complex::Complex;
-use wgsl_fft::{R2_WGSL, R4_WGSL};
+use wgsl_fft::shaders::{R2_WGSL, R4_WGSL};
 
 // ── Inline WGSL shaders for the three non-FFT stages ─────────────────────────
 

@@ -104,3 +104,105 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     DST[d_base + 2u*p]   = x1.x - t.x; DST[d_base + 2u*p+1u]   = x1.y - t.y;
 }
 "#;
+
+/// Cooley-Tukey radix-2 DIT FFT shader using vec2<f32> complex pairs.
+/// Computes twiddle factors on the fly (no TWIDDLE buffer needed).
+/// This matches the pipeline's existing FFT shader format.
+///
+/// Uniform params: .x = N, .y = stage, .z = direction (0=FFT, 1=IFFT)
+/// @binding(0): input_data (storage, read) - array<vec2<f32>>
+/// @binding(1): output_data (storage, read_write) - array<vec2<f32>>
+pub const COOLEY_TUKEY_R2_WGSL: &str = r#"
+struct FftParams {
+    n:         u32,
+    stage:     u32,
+    direction: u32,
+    _pad:      u32,
+};
+
+@group(0) @binding(0) var<storage, read>       input_data:  array<vec2<f32>>;
+@group(0) @binding(1) var<storage, read_write> output_data: array<vec2<f32>>;
+@group(0) @binding(2) var<uniform>             params:      FftParams;
+
+fn cmul(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
+    return vec2<f32>(
+        a.x * b.x - a.y * b.y,
+        a.x * b.y + a.y * b.x,
+    );
+}
+
+fn twiddle(k: u32, span: u32, direction: u32) -> vec2<f32> {
+    let pi2: f32 = 6.283185307179586;
+    let sign = select(-1.0, 1.0, direction == 1u);
+    let angle = sign * pi2 * f32(k) / f32(span);
+    return vec2<f32>(cos(angle), sin(angle));
+}
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x;
+    if i >= params.n / 2u { return; }
+
+    let span: u32 = 1u << (params.stage + 1u);
+    let half: u32 = span >> 1u;
+    let group: u32 = i / half;
+    let k: u32     = i % half;
+    let even: u32  = group * span + k;
+    let odd: u32   = even + half;
+
+    let u = input_data[even];
+    let v = input_data[odd];
+    let w  = twiddle(k, span, params.direction);
+    let wv = cmul(w, v);
+    output_data[even] = u + wv;
+    output_data[odd]  = u - wv;
+}
+"#;
+
+/// Normalize shader for vec2<f32> format
+/// Divides each element by N
+/// @binding(0): data (storage, read_write) - array<vec2<f32>>
+/// @binding(1): params (uniform) - vec4<u32> where .x = N
+pub const NORMALIZE_VEC2_WGSL: &str = r#"
+@group(0) @binding(0) var<storage, read_write> data: array<vec2<f32>>;
+@group(0) @binding(1) var<uniform> params: vec4<u32>;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x;
+    let n = params.x;
+    if i >= n { return; }
+    let scale = 1.0 / f32(n);
+    data[i] = vec2<f32>(data[i].x * scale, data[i].y * scale);
+}
+"#;
+
+/// Cooley-Tukey radix-2 bit-reversal permutation (vec2<f32> format).
+/// Bindings: 0 = src (read), 1 = dst (read_write), 2 = BitRevParams uniform { n, log2_n, _pad0, _pad1 }
+pub const BIT_REVERSAL_WGSL: &str = r#"
+struct BitRevParams {
+    n: u32,
+    log2_n: u32,
+    _pad0: u32,
+    _pad1: u32,
+};
+@group(0) @binding(0) var<storage, read>       src:    array<vec2<f32>>;
+@group(0) @binding(1) var<storage, read_write> dst:    array<vec2<f32>>;
+@group(0) @binding(2) var<uniform>             params: BitRevParams;
+fn bit_reverse(x: u32, bits: u32) -> u32 {
+    var r: u32 = 0u;
+    var v: u32 = x;
+    for (var i: u32 = 0u; i < bits; i++) {
+        r = (r << 1u) | (v & 1u);
+        v >>= 1u;
+    }
+    return r;
+}
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x;
+    if i >= params.n { return; }
+    let j = bit_reverse(i, params.log2_n);
+    dst[i] = src[j];
+}
+"#;
