@@ -5,11 +5,19 @@
 //! 2. Implement the `FftExecutor` trait.
 //! 3. Register your rival in `examples/rivalry_leaderboard.rs`.
 
+#[allow(clippy::all)]
 pub mod baseline;
+#[allow(clippy::all)]
 pub mod claude;
+#[allow(clippy::all)]
 pub mod codex;
+#[allow(clippy::all)]
 pub mod devstral_2;
+#[allow(clippy::all)]
 pub mod gemini;
+#[allow(clippy::all)]
 pub mod mistral_vibe;
+#[allow(clippy::all)]
 pub mod radix4;
+#[allow(clippy::all)]
 pub mod radix4_proper;

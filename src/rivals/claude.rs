@@ -480,6 +480,12 @@ pub struct ClaudeFft {
     cache: RefCell<std::collections::HashMap<usize, ClaudeCache>>,
 }
 
+impl Default for ClaudeFft {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ClaudeFft {
     pub fn new() -> Self {
         let instance = wgpu::Instance::default();

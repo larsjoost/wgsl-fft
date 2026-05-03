@@ -70,7 +70,7 @@ pub fn benchmark_gpu_only(
         })
         .collect();
 
-    let mut all_raw_data = Vec::with_capacity((n * 2 * batch_size as usize) as usize);
+    let mut all_raw_data = Vec::with_capacity(n * 2 * batch_size);
     for input in &inputs {
         let raw = gpu_fft.prepare_input_data(input, false);
         all_raw_data.extend_from_slice(&raw);

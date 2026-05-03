@@ -8,6 +8,12 @@ use wgpu;
 
 pub struct StockhamBaseline(pub GpuFft);
 
+impl Default for StockhamBaseline {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl StockhamBaseline {
     pub fn new() -> Self {
         Self(GpuFft::new().unwrap())

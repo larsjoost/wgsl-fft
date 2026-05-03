@@ -54,14 +54,12 @@ pub trait GpuFftTrait {
 }
 
 /// Pre-allocated GPU resources for a specific FFT size.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct SizeCache {
     pub buf_a: wgpu::Buffer,
     pub buf_b: wgpu::Buffer,
     pub staging_buf: wgpu::Buffer,
-    #[allow(dead_code)]
     pub twiddle_buf: wgpu::Buffer,
-    #[allow(dead_code)]
     pub data_bytes: u64,
     /// R4 stages (R4 mode) or R2 stages (legacy with_shader mode).
     pub stage_bgs: Vec<wgpu::BindGroup>,
@@ -91,6 +89,7 @@ pub struct FftUniforms {
 /// pipeline or [`GpuFft::with_shader`] to supply a custom WGSL kernel.
 ///
 /// For arbitrary FFT sizes (not powers of 2), Bluestein's algorithm is used automatically.
+#[derive(Debug)]
 pub struct GpuFft {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
@@ -463,7 +462,7 @@ impl GpuFft {
             let sc = self.get_or_build_size_cache(n, log_n);
 
             // Prepare all input data for parallel processing
-            let mut all_raw_data = Vec::with_capacity((n * 2 * batch_size as usize) as usize);
+            let mut all_raw_data = Vec::with_capacity(n * 2 * batch_size as usize);
             for input in inputs {
                 let raw = self.prepare_input_data(input, inverse);
                 all_raw_data.extend_from_slice(&raw);
@@ -674,9 +673,9 @@ impl GpuFft {
             log_n as usize
         };
 
-        let single_fft_bytes = (n * 2 * std::mem::size_of::<f32>()) as u64;
+        let single_fft_bytes = n as u64 * 2 * std::mem::size_of::<f32>() as u64;
         // Cap at 1024 to avoid excessive pre-allocation; hardware limits are often much larger.
-        let max_batch_size = (self.device.limits().max_storage_buffer_binding_size as u64
+        let max_batch_size = (self.device.limits().max_storage_buffer_binding_size
             / single_fft_bytes)
             .min(1024) as u32;
         let data_bytes = single_fft_bytes * max_batch_size as u64;

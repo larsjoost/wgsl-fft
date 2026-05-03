@@ -91,8 +91,10 @@ for (i, spectrum) in spectra.iter().enumerate() {
 ## Requirements
 
 - A wgpu-capable GPU (Vulkan, Metal, DX12, or WebGPU).
-- Input length must be a **power of two** and non-empty.
+- Input length must be **non-empty**.
 - All vectors in a batch must have the same length.
+- For **power-of-two sizes**: Uses fast Stockham Radix-4/2 GPU acceleration.
+- For **arbitrary sizes**: Uses Bluestein's algorithm (CPU-based fallback via rustfft).
 
 ## Module Structure
 
