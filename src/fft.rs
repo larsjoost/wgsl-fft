@@ -216,7 +216,19 @@ impl GpuFft {
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
                 ..Default::default()
             }))?;
+        Self::from_device_queue(device, queue)
+    }
 
+    /// Create a new [`GpuFft`] using the Radix-4/2 Stockham baseline with an existing device and queue.
+    ///
+    /// This constructor allows you to provide your own wgpu device and queue, which is useful
+    /// when you want to share a single GPU context across multiple resources.
+    ///
+    /// # Arguments
+    ///
+    /// * `device` - A wgpu device to use for creating resources.
+    /// * `queue` - A wgpu queue to use for submitting commands.
+    pub fn from_device_queue(device: wgpu::Device, queue: wgpu::Queue) -> Result<Self, Box<dyn std::error::Error>> {
         let compile = |src: &str, label: &str| {
             let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some(label),
@@ -268,7 +280,25 @@ impl GpuFft {
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
                 ..Default::default()
             }))?;
+        Self::with_shader_and_device(device, queue, wgsl_source, label)
+    }
 
+    /// Create a new [`GpuFft`] with a custom WGSL shader using an existing device and queue.
+    ///
+    /// This allows AI rivals to swap kernels easily while sharing a GPU context.
+    ///
+    /// # Arguments
+    ///
+    /// * `device` - A wgpu device to use for creating resources.
+    /// * `queue` - A wgpu queue to use for submitting commands.
+    /// * `wgsl_source` - The WGSL shader source code.
+    /// * `label` - A label for the shader and pipeline.
+    pub fn with_shader_and_device(
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        wgsl_source: String,
+        label: &str,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let shader_mod = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some(label),
             source: wgpu::ShaderSource::Wgsl(wgsl_source.into()),
@@ -302,6 +332,8 @@ impl GpuFft {
         }))
         .is_ok()
     }
+
+
 
     /// Compute the forward FFT for a batch of input vectors.
     ///
