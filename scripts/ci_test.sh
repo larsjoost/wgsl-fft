@@ -105,11 +105,11 @@ else
     exit 1
 fi
 
-# Run clippy (allow expected shader warnings)
+# Run clippy (skip --all-features to avoid ROCm/CUDA build requirements on systems without them)
 section "Running clippy analysis"
-echo "Running: cargo clippy --all-targets --all-features"
-if cargo clippy --all-targets --all-features; then
-    echo "✅ Clippy analysis passed (with expected shader warnings)"
+echo "Running: cargo clippy --all-targets"
+if cargo clippy --all-targets 2>&1; then
+    echo "✅ Clippy analysis passed"
 else
     CLIPPY_RESULT=$?
     echo "⚠️  Clippy completed with exit code $CLIPPY_RESULT"

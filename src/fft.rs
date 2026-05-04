@@ -228,7 +228,10 @@ impl GpuFft {
     ///
     /// * `device` - A wgpu device to use for creating resources.
     /// * `queue` - A wgpu queue to use for submitting commands.
-    pub fn from_device_queue(device: wgpu::Device, queue: wgpu::Queue) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn from_device_queue(
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let compile = |src: &str, label: &str| {
             let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some(label),
@@ -332,8 +335,6 @@ impl GpuFft {
         }))
         .is_ok()
     }
-
-
 
     /// Compute the forward FFT for a batch of input vectors.
     ///
