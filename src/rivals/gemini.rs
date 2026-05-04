@@ -1,9 +1,11 @@
 use std::any::Any;
-
-use crate::FftExecutor;
-use num_complex::Complex;
 use std::cell::RefCell;
 use std::num::NonZeroU64;
+
+use num_complex::Complex;
+
+use crate::error::Result;
+use crate::FftExecutor;
 
 /// Stockham Radix-8 DIT
 const GEMINI_R8_WGSL: &str = r#"
@@ -611,7 +613,7 @@ impl GeminiFft {
         &self,
         inputs: &[Vec<Complex<f32>>],
         inverse: bool,
-    ) -> Result<Vec<Vec<Complex<f32>>>, Box<dyn std::error::Error>> {
+    ) -> Result<Vec<Vec<Complex<f32>>>> {
         if inputs.is_empty() {
             return Ok(Vec::new());
         }
@@ -689,16 +691,10 @@ impl FftExecutor for GeminiFft {
     fn name(&self) -> &str {
         "Gemini (Mixed-Radix Stockham)"
     }
-    fn fft(
-        &self,
-        inputs: &[Vec<Complex<f32>>],
-    ) -> Result<Vec<Vec<Complex<f32>>>, Box<dyn std::error::Error>> {
+    fn fft(&self, inputs: &[Vec<Complex<f32>>]) -> Result<Vec<Vec<Complex<f32>>>> {
         self.transform_batch_internal(inputs, false)
     }
-    fn ifft(
-        &self,
-        inputs: &[Vec<Complex<f32>>],
-    ) -> Result<Vec<Vec<Complex<f32>>>, Box<dyn std::error::Error>> {
+    fn ifft(&self, inputs: &[Vec<Complex<f32>>]) -> Result<Vec<Vec<Complex<f32>>>> {
         self.transform_batch_internal(inputs, true)
     }
 

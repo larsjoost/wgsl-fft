@@ -12,19 +12,20 @@ use std::num::NonZeroU64;
 
 use num_complex::Complex;
 
+use crate::error::{FftError, Result};
 use crate::shaders;
+
+/// Number of components in a complex number (real and imaginary)
+const COMPLEX_COMPONENT_COUNT: usize = 2;
+
+/// Byte size of an f32
+const F32_BYTE_SIZE: usize = std::mem::size_of::<f32>();
 
 /// Trait for FFT implementations that can be benchmarked.
 pub trait FftExecutor {
     fn name(&self) -> &str;
-    fn fft(
-        &self,
-        inputs: &[Vec<Complex<f32>>],
-    ) -> Result<Vec<Vec<Complex<f32>>>, Box<dyn std::error::Error>>;
-    fn ifft(
-        &self,
-        inputs: &[Vec<Complex<f32>>],
-    ) -> Result<Vec<Vec<Complex<f32>>>, Box<dyn std::error::Error>>;
+    fn fft(&self, inputs: &[Vec<Complex<f32>>]) -> Result<Vec<Vec<Complex<f32>>>>;
+    fn ifft(&self, inputs: &[Vec<Complex<f32>>]) -> Result<Vec<Vec<Complex<f32>>>>;
 
     /// Get a reference to the underlying type for downcasting.
     fn as_any(&self) -> &dyn Any;
@@ -41,7 +42,7 @@ pub trait GpuFftTrait {
         n: usize,
         warmup_iters: usize,
         bench_iters: usize,
-    ) -> Result<f64, Box<dyn std::error::Error>>;
+    ) -> Result<f64>;
 
     /// Get or build size-specific GPU resources.
     fn get_or_build_size_cache(&self, n: usize, log_n: u32) -> SizeCache;
@@ -104,17 +105,11 @@ impl FftExecutor for GpuFft {
         "Baseline (Stockham Radix-4/2)"
     }
 
-    fn fft(
-        &self,
-        inputs: &[Vec<Complex<f32>>],
-    ) -> Result<Vec<Vec<Complex<f32>>>, Box<dyn std::error::Error>> {
+    fn fft(&self, inputs: &[Vec<Complex<f32>>]) -> Result<Vec<Vec<Complex<f32>>>> {
         self.transform_batch_internal(inputs, false)
     }
 
-    fn ifft(
-        &self,
-        inputs: &[Vec<Complex<f32>>],
-    ) -> Result<Vec<Vec<Complex<f32>>>, Box<dyn std::error::Error>> {
+    fn ifft(&self, inputs: &[Vec<Complex<f32>>]) -> Result<Vec<Vec<Complex<f32>>>> {
         self.transform_batch_internal(inputs, true)
     }
 
@@ -131,7 +126,7 @@ impl GpuFftTrait for GpuFft {
         n: usize,
         warmup_iters: usize,
         bench_iters: usize,
-    ) -> Result<f64, Box<dyn std::error::Error>> {
+    ) -> Result<f64> {
         use std::time::Instant;
 
         // Warmup
@@ -197,7 +192,7 @@ impl GpuFft {
     /// let fft = GpuFft::new().expect("GPU required");
     /// // Now use fft.fft() and fft.ifft()
     /// ```
-    pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new() -> Result<Self> {
         let instance = wgpu::Instance::default();
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
@@ -212,10 +207,9 @@ impl GpuFft {
             }))
         })?;
 
-        let (device, queue) =
-            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-                ..Default::default()
-            }))?;
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            ..Default::default()
+        }))?;
         Self::from_device_queue(device, queue)
     }
 
@@ -228,10 +222,7 @@ impl GpuFft {
     ///
     /// * `device` - A wgpu device to use for creating resources.
     /// * `queue` - A wgpu queue to use for submitting commands.
-    pub fn from_device_queue(
-        device: wgpu::Device,
-        queue: wgpu::Queue,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn from_device_queue(device: wgpu::Device, queue: wgpu::Queue) -> Result<Self> {
         let compile = |src: &str, label: &str| {
             let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some(label),
@@ -261,10 +252,7 @@ impl GpuFft {
 
     /// Create a new [`GpuFft`] with a custom WGSL shader.
     /// This allows AI rivals to swap kernels easily.
-    pub fn with_shader(
-        wgsl_source: String,
-        label: &str,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn with_shader(wgsl_source: String, label: &str) -> Result<Self> {
         let instance = wgpu::Instance::default();
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
@@ -279,10 +267,9 @@ impl GpuFft {
             }))
         })?;
 
-        let (device, queue) =
-            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-                ..Default::default()
-            }))?;
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            ..Default::default()
+        }))?;
         Self::with_shader_and_device(device, queue, wgsl_source, label)
     }
 
@@ -301,7 +288,7 @@ impl GpuFft {
         queue: wgpu::Queue,
         wgsl_source: String,
         label: &str,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
+    ) -> Result<Self> {
         let shader_mod = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some(label),
             source: wgpu::ShaderSource::Wgsl(wgsl_source.into()),
@@ -384,10 +371,7 @@ impl GpuFft {
     /// let arbitrary_input = vec![vec![Complex::new(1.0, 0.0); 150]];
     /// let arbitrary_spectrum = fft.fft(&arbitrary_input).expect("Arbitrary size FFT failed");
     /// ```
-    pub fn fft(
-        &self,
-        inputs: &[Vec<Complex<f32>>],
-    ) -> Result<Vec<Vec<Complex<f32>>>, Box<dyn std::error::Error>> {
+    pub fn fft(&self, inputs: &[Vec<Complex<f32>>]) -> Result<Vec<Vec<Complex<f32>>>> {
         self.transform_batch_internal(inputs, false)
     }
 
@@ -440,18 +424,17 @@ impl GpuFft {
     /// let arbitrary_spectrum = vec![vec![Complex::new(1.0, 0.0); 150]];
     /// let arbitrary_reconstructed = fft.ifft(&arbitrary_spectrum).expect("Arbitrary size IFFT failed");
     /// ```
-    pub fn ifft(
-        &self,
-        inputs: &[Vec<Complex<f32>>],
-    ) -> Result<Vec<Vec<Complex<f32>>>, Box<dyn std::error::Error>> {
+    pub fn ifft(&self, inputs: &[Vec<Complex<f32>>]) -> Result<Vec<Vec<Complex<f32>>>> {
         self.transform_batch_internal(inputs, true)
     }
 
     /// Validate that the input size is non-zero.
     /// Arbitrary sizes are now supported via Bluestein's algorithm.
-    pub fn validate_input_size(&self, n: usize) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn validate_input_size(&self, n: usize) -> Result<()> {
         if n == 0 {
-            return Err("Transform length must be non-zero".into());
+            return Err(FftError::ValidationError(
+                "Transform length must be non-zero".to_string(),
+            ));
         }
         Ok(())
     }
@@ -472,61 +455,136 @@ impl GpuFft {
         &self,
         inputs: &[Vec<Complex<f32>>],
         inverse: bool,
-    ) -> Result<Vec<Vec<Complex<f32>>>, Box<dyn std::error::Error>> {
+    ) -> Result<Vec<Vec<Complex<f32>>>> {
         if inputs.is_empty() {
             return Ok(Vec::new());
         }
 
-        // Validate all inputs have the same size
+        self.validate_batch_inputs(inputs)?;
+
         let n = inputs[0].len();
-        for input in inputs.iter() {
+        let batch_size = inputs.len() as u32;
+
+        if Self::is_power_of_two(n) {
+            return self.transform_power_of_two(inputs, inverse, n, batch_size);
+        }
+
+        self.transform_batch_bluestein(inputs, inverse)
+    }
+
+    /// Validate that all inputs in a batch have the same size.
+    fn validate_batch_inputs(&self, inputs: &[Vec<Complex<f32>>]) -> Result<()> {
+        let n = inputs[0].len();
+
+        for input in inputs {
             if input.len() != n {
-                return Err("All input vectors in a batch must have the same length".into());
+                return Err(FftError::BatchError(
+                    "All input vectors in a batch must have the same length".to_string(),
+                ));
             }
             self.validate_input_size(input.len())?;
         }
 
-        let batch_size = inputs.len() as u32;
+        Ok(())
+    }
 
-        // Route to appropriate algorithm based on size
-        if Self::is_power_of_two(n) {
-            // Use Stockham Radix-4/2 for power-of-two sizes
-            let log_n = n.trailing_zeros();
-            let sc = self.get_or_build_size_cache(n, log_n);
+    /// Transform batch for power-of-two sizes using Stockham Radix-4/2.
+    fn transform_power_of_two(
+        &self,
+        inputs: &[Vec<Complex<f32>>],
+        inverse: bool,
+        n: usize,
+        batch_size: u32,
+    ) -> Result<Vec<Vec<Complex<f32>>>> {
+        let log_n = n.trailing_zeros();
+        let sc = self.get_or_build_size_cache(n, log_n);
 
-            // Prepare all input data for parallel processing
-            let mut all_raw_data = Vec::with_capacity(n * 2 * batch_size as usize);
-            for input in inputs {
-                let raw = self.prepare_input_data(input, inverse);
-                all_raw_data.extend_from_slice(&raw);
-            }
+        let all_raw_data = self.prepare_batch_input_data(inputs, inverse);
 
-            // Upload entire batch to GPU
-            self.queue
-                .write_buffer(&sc.buf_a, 0, bytemuck::cast_slice(&all_raw_data));
+        self.upload_batch_data(&sc, &all_raw_data);
+        self.execute_compute_pass(&sc, batch_size, n);
 
-            // Execute compute pass for the entire batch
-            self.execute_compute_pass(&sc, batch_size, n);
+        let mut output = self.readback_results(&sc, batch_size, n)?;
 
-            // Read back all results
-            let mut output = self.readback_results(&sc, batch_size, n)?;
-
-            // Apply post-processing for inverse transforms
-            if inverse {
-                for chunk in output.chunks_mut(n) {
-                    self.apply_inverse_transform_postprocessing(chunk, n);
-                }
-            }
-
-            // Split into individual results
-            let results: Vec<Vec<Complex<f32>>> =
-                output.chunks(n).map(|chunk| chunk.to_vec()).collect();
-
-            Ok(results)
-        } else {
-            // Use Bluestein's algorithm for arbitrary sizes
-            self.transform_batch_bluestein(inputs, inverse)
+        if inverse {
+            self.apply_inverse_postprocessing(&mut output, n);
         }
+
+        Ok(self.split_results(output, n))
+    }
+
+    /// Prepare input data for all inputs in a batch.
+    fn prepare_batch_input_data(
+        &self,
+        inputs: &[Vec<Complex<f32>>],
+        inverse: bool,
+    ) -> Vec<f32> {
+        let batch_size = inputs.len();
+        let n = inputs[0].len();
+
+        let mut all_raw_data = Vec::with_capacity(n * COMPLEX_COMPONENT_COUNT * batch_size);
+
+        for input in inputs {
+            let raw = self.prepare_input_data(input, inverse);
+            all_raw_data.extend_from_slice(&raw);
+        }
+
+        all_raw_data
+    }
+
+    /// Upload batch data to GPU buffer.
+    fn upload_batch_data(&self, sc: &SizeCache, data: &[f32]) {
+        self.queue.write_buffer(&sc.buf_a, 0, bytemuck::cast_slice(data));
+    }
+
+    /// Apply inverse transform postprocessing to all chunks.
+    fn apply_inverse_postprocessing(&self, output: &mut [Complex<f32>], n: usize) {
+        for chunk in output.chunks_mut(n) {
+            self.apply_inverse_transform_postprocessing(chunk, n);
+        }
+    }
+
+    /// Split output into individual results.
+    fn split_results(&self, output: Vec<Complex<f32>>, n: usize) -> Vec<Vec<Complex<f32>>> {
+        output.chunks(n).map(|chunk| chunk.to_vec()).collect()
+    }
+
+    /// Get the result buffer based on whether result is in buffer B.
+    fn get_result_buffer<'a>(&self, sc: &'a SizeCache) -> &'a wgpu::Buffer {
+        if sc.result_in_b {
+            return &sc.buf_b;
+        }
+        &sc.buf_a
+    }
+
+    /// Calculate number of R4 stages.
+    fn calculate_num_r4_stages(&self, is_r4_mode: bool, log_n: u32) -> usize {
+        if is_r4_mode {
+            return (log_n / 2) as usize;
+        }
+        0
+    }
+
+    /// Calculate total number of stages.
+    fn calculate_total_stages(
+        &self,
+        is_r4_mode: bool,
+        num_r4: usize,
+        has_r2: bool,
+        log_n: u32,
+    ) -> usize {
+        if is_r4_mode {
+            return num_r4 + has_r2 as usize;
+        }
+        log_n as usize
+    }
+
+    /// Calculate twiddle table count.
+    fn calculate_twiddle_count(&self, is_r4_mode: bool, n: usize) -> usize {
+        if is_r4_mode {
+            return n;
+        }
+        n / 2
     }
 
     /// Transform using Bluestein's algorithm for arbitrary FFT sizes.
@@ -546,98 +604,141 @@ impl GpuFft {
         &self,
         inputs: &[Vec<Complex<f32>>],
         inverse: bool,
-    ) -> Result<Vec<Vec<Complex<f32>>>, Box<dyn std::error::Error>> {
+    ) -> Result<Vec<Vec<Complex<f32>>>> {
+        if inputs.is_empty() {
+            return Ok(Vec::new());
+        }
+
         let n = inputs[0].len();
         let batch_size = inputs.len();
 
-        // Use rustfft for arbitrary size FFT/IFFT on CPU
-        // This is a fallback implementation that ensures correctness
         let mut planner = rustfft::FftPlanner::<f32>::new();
         let mut results = Vec::with_capacity(batch_size);
 
         for input in inputs {
-            let mut result = input.clone();
-
-            if inverse {
-                // rustfft's inverse FFT does NOT include scaling by default
-                // We need to match our GPU implementation which scales by 1/N
-                let ifft = planner.plan_fft_inverse(n);
-                ifft.process(&mut result);
-                // Apply 1/N scaling to match our GPU implementation
-                let scale = 1.0 / n as f32;
-                for x in &mut result {
-                    *x = Complex::new(x.re * scale, x.im * scale);
-                }
-            } else {
-                let fft = planner.plan_fft_forward(n);
-                fft.process(&mut result);
-                // Forward FFT has no scaling (standard DFT convention)
-            }
-
-            results.push(result);
+            results.push(self.process_bluestein_single(&mut planner, input, n, inverse));
         }
 
         Ok(results)
     }
 
+    /// Process a single input using Bluestein's algorithm.
+    fn process_bluestein_single(
+        &self,
+        planner: &mut rustfft::FftPlanner<f32>,
+        input: &[Complex<f32>],
+        n: usize,
+        inverse: bool,
+    ) -> Vec<Complex<f32>> {
+        if inverse {
+            return self.process_bluestein_inverse(planner, input, n);
+        }
+
+        let mut result = input.to_vec();
+        let fft = planner.plan_fft_forward(n);
+        fft.process(&mut result);
+        result
+    }
+
+    /// Process inverse FFT using Bluestein's algorithm with scaling.
+    fn process_bluestein_inverse(
+        &self,
+        planner: &mut rustfft::FftPlanner<f32>,
+        input: &[Complex<f32>],
+        n: usize,
+    ) -> Vec<Complex<f32>> {
+        let mut result = input.to_vec();
+
+        let ifft = planner.plan_fft_inverse(n);
+        ifft.process(&mut result);
+
+        self.apply_bluestein_scaling(&mut result, n);
+        result
+    }
+
+    /// Apply 1/N scaling to match GPU implementation.
+    fn apply_bluestein_scaling(&self, result: &mut [Complex<f32>], n: usize) {
+        let scale = 1.0 / n as f32;
+
+        for x in result {
+            *x = Complex::new(x.re * scale, x.im * scale);
+        }
+    }
+
     /// Prepare input data for GPU processing, applying conjugation for IFFT if needed.
     pub fn prepare_input_data(&self, input: &[Complex<f32>], inverse: bool) -> Vec<f32> {
         if inverse {
-            // For IFFT: conjugate input
-            input.iter().flat_map(|c| [c.re, -c.im]).collect()
-        } else {
-            // For FFT: use input as-is
-            input.iter().flat_map(|c| [c.re, c.im]).collect()
+            return input.iter().flat_map(|c| [c.re, -c.im]).collect();
         }
+        input.iter().flat_map(|c| [c.re, c.im]).collect()
     }
 
     /// Execute the compute shader pass.
     pub fn execute_compute_pass(&self, sc: &SizeCache, batch_size: u32, n: usize) {
-        let mut enc = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("FFT Pass"),
-            });
+        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("FFT Pass"),
+        });
 
-        {
-            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("FFT Compute"),
-                timestamp_writes: None,
-            });
+        self.run_compute_pass(&mut enc, sc, batch_size);
 
-            if sc.wg_r4 > 0 {
-                // R4 mode: ⌊log₄N⌋ Radix-4 dispatches + optional Radix-2
-                pass.set_pipeline(&self.pipeline);
-                for bg in &sc.stage_bgs {
-                    pass.set_bind_group(0, bg, &[]);
-                    pass.dispatch_workgroups(sc.wg_r4, batch_size, 1);
-                }
-                if let Some(r2_bg) = &sc.stage_bg_r2 {
-                    pass.set_pipeline(self.pipeline_r2.as_ref().unwrap());
-                    pass.set_bind_group(0, r2_bg, &[]);
-                    pass.dispatch_workgroups(sc.wg_n2, batch_size, 1);
-                }
-            } else {
-                // Legacy mode (with_shader): log₂N Radix-2 dispatches
-                pass.set_pipeline(&self.pipeline);
-                for bg in &sc.stage_bgs {
-                    pass.set_bind_group(0, bg, &[]);
-                    pass.dispatch_workgroups(sc.wg_n2, batch_size, 1);
-                }
-            }
-        }
+        let result_buf = self.get_result_buffer(sc);
+        let single_fft_bytes = (n * COMPLEX_COMPONENT_COUNT * F32_BYTE_SIZE) as u64;
 
-        let result_buf = if sc.result_in_b { &sc.buf_b } else { &sc.buf_a };
-        let single_fft_bytes = (n * 2 * std::mem::size_of::<f32>()) as u64;
-        enc.copy_buffer_to_buffer(
-            result_buf,
-            0,
-            &sc.staging_buf,
-            0,
-            single_fft_bytes * batch_size as u64,
-        );
+        enc.copy_buffer_to_buffer(result_buf, 0, &sc.staging_buf, 0, single_fft_bytes * batch_size as u64);
 
         self.queue.submit(std::iter::once(enc.finish()));
+    }
+
+    /// Run compute pass on encoder.
+    fn run_compute_pass(&self, enc: &mut wgpu::CommandEncoder, sc: &SizeCache, batch_size: u32) {
+        let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("FFT Compute"),
+            timestamp_writes: None,
+        });
+
+        if sc.wg_r4 > 0 {
+            self.dispatch_r4_mode_pass(&mut pass, sc, batch_size);
+            return;
+        }
+
+        self.dispatch_legacy_mode_pass(&mut pass, sc, batch_size);
+    }
+
+    /// Dispatch R4 mode compute pass.
+    fn dispatch_r4_mode_pass(&self, pass: &mut wgpu::ComputePass, sc: &SizeCache, batch_size: u32) {
+        pass.set_pipeline(&self.pipeline);
+
+        for bg in &sc.stage_bgs {
+            pass.set_bind_group(0, bg, &[]);
+            pass.dispatch_workgroups(sc.wg_r4, batch_size, 1);
+        }
+
+        if let Some(r2_bg) = &sc.stage_bg_r2 {
+            self.dispatch_r2_stage_pass(pass, r2_bg, sc, batch_size);
+        }
+    }
+
+    /// Dispatch R2 stage pass.
+    fn dispatch_r2_stage_pass(
+        &self,
+        pass: &mut wgpu::ComputePass,
+        r2_bg: &wgpu::BindGroup,
+        sc: &SizeCache,
+        batch_size: u32,
+    ) {
+        pass.set_pipeline(self.pipeline_r2.as_ref().unwrap());
+        pass.set_bind_group(0, r2_bg, &[]);
+        pass.dispatch_workgroups(sc.wg_n2, batch_size, 1);
+    }
+
+    /// Dispatch legacy mode compute pass.
+    fn dispatch_legacy_mode_pass(&self, pass: &mut wgpu::ComputePass, sc: &SizeCache, batch_size: u32) {
+        pass.set_pipeline(&self.pipeline);
+
+        for bg in &sc.stage_bgs {
+            pass.set_bind_group(0, bg, &[]);
+            pass.dispatch_workgroups(sc.wg_n2, batch_size, 1);
+        }
     }
 
     /// Read back results from GPU and convert to complex numbers.
@@ -646,16 +747,17 @@ impl GpuFft {
         sc: &SizeCache,
         batch_size: u32,
         n: usize,
-    ) -> Result<Vec<Complex<f32>>, Box<dyn std::error::Error>> {
+    ) -> Result<Vec<Complex<f32>>> {
         // Readback
-        let single_fft_bytes = (n * 2 * std::mem::size_of::<f32>()) as u64;
+        let single_fft_bytes = (n * COMPLEX_COMPONENT_COUNT * F32_BYTE_SIZE) as u64;
         let total_bytes = single_fft_bytes * batch_size as u64;
         let slice = sc.staging_buf.slice(0..total_bytes);
         slice.map_async(wgpu::MapMode::Read, |_| {});
-        self.device.poll(wgpu::PollType::Wait {
-            submission_index: None,
-            timeout: None,
-        })?;
+        self.device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })?;
 
         let mapped = slice.get_mapped_range();
         let floats: &[f32] = bytemuck::cast_slice(&mapped);
@@ -697,14 +799,9 @@ impl GpuFft {
     pub fn build_size_cache(&self, n: usize, log_n: u32) -> SizeCache {
         let is_r4_mode = self.pipeline_r2.is_some();
 
-        // Stage counts
-        let num_r4 = if is_r4_mode { (log_n / 2) as usize } else { 0 };
+        let num_r4 = self.calculate_num_r4_stages(is_r4_mode, log_n);
         let has_r2 = is_r4_mode && log_n % 2 == 1;
-        let total_stages = if is_r4_mode {
-            num_r4 + has_r2 as usize
-        } else {
-            log_n as usize
-        };
+        let total_stages = self.calculate_total_stages(is_r4_mode, num_r4, has_r2, log_n);
 
         let single_fft_bytes = n as u64 * 2 * std::mem::size_of::<f32>() as u64;
         // Cap at 1024 to avoid excessive pre-allocation; hardware limits are often much larger.
@@ -735,7 +832,7 @@ impl GpuFft {
 
         // Twiddle table: N entries for R4 mode (max accessed index = 3N/2−5 < 2N),
         // N/2 entries for legacy R2 mode (max accessed index = N−2 < N).
-        let twiddle_count = if is_r4_mode { n } else { n / 2 };
+        let twiddle_count = self.calculate_twiddle_count(is_r4_mode, n);
         let twiddles: Vec<f32> = (0..twiddle_count)
             .flat_map(|j| {
                 let angle = -std::f32::consts::TAU * j as f32 / n as f32;

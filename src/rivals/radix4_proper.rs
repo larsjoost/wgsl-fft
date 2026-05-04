@@ -5,6 +5,7 @@ use std::num::NonZeroU64;
 use bytemuck;
 use num_complex::Complex;
 
+use crate::error::Result;
 use crate::FftExecutor;
 
 // -- WGSL: Stockham Radix-4 DIT --
@@ -428,7 +429,7 @@ impl Radix4ProperFft {
         &self,
         inputs: &[Vec<Complex<f32>>],
         inverse: bool,
-    ) -> Result<Vec<Vec<Complex<f32>>>, Box<dyn std::error::Error>> {
+    ) -> Result<Vec<Vec<Complex<f32>>>> {
         if inputs.is_empty() {
             return Ok(Vec::new());
         }
@@ -490,10 +491,12 @@ impl Radix4ProperFft {
 
         let slice = cache.staging_buf.slice(0..out_bytes);
         slice.map_async(wgpu::MapMode::Read, |_| {});
-        self.device.poll(wgpu::PollType::Wait {
-            submission_index: None,
-            timeout: None,
-        })?;
+        self.device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            ?;
 
         let mapped = slice.get_mapped_range();
         let floats: &[f32] = bytemuck::cast_slice(&mapped);
@@ -523,17 +526,11 @@ impl FftExecutor for Radix4ProperFft {
         "Radix-4 Proper (Mixed Radix-4/2)"
     }
 
-    fn fft(
-        &self,
-        inputs: &[Vec<Complex<f32>>],
-    ) -> Result<Vec<Vec<Complex<f32>>>, Box<dyn std::error::Error>> {
+    fn fft(&self, inputs: &[Vec<Complex<f32>>]) -> Result<Vec<Vec<Complex<f32>>>> {
         self.transform_batch_internal(inputs, false)
     }
 
-    fn ifft(
-        &self,
-        inputs: &[Vec<Complex<f32>>],
-    ) -> Result<Vec<Vec<Complex<f32>>>, Box<dyn std::error::Error>> {
+    fn ifft(&self, inputs: &[Vec<Complex<f32>>]) -> Result<Vec<Vec<Complex<f32>>>> {
         self.transform_batch_internal(inputs, true)
     }
 

@@ -42,9 +42,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     let stride = quarter_n / p;
     let tw     = k * stride;
-    x[1] = cmul(vec2<f32>(TWIDDLE[2u*tw],   TWIDDLE[2u*tw+1u]),   x[1]);
-    x[2] = cmul(vec2<f32>(TWIDDLE[4u*tw],   TWIDDLE[4u*tw+1u]),   x[2]);
-    x[3] = cmul(vec2<f32>(TWIDDLE[6u*tw],   TWIDDLE[6u*tw+1u]),   x[3]);
+    let tw_im_sign = 1.0;
+    x[1] = cmul(vec2<f32>(TWIDDLE[2u*tw],   tw_im_sign * TWIDDLE[2u*tw+1u]),   x[1]);
+    x[2] = cmul(vec2<f32>(TWIDDLE[4u*tw],   tw_im_sign * TWIDDLE[4u*tw+1u]),   x[2]);
+    x[3] = cmul(vec2<f32>(TWIDDLE[6u*tw],   tw_im_sign * TWIDDLE[6u*tw+1u]),   x[3]);
 
     let s02 = x[0] + x[2]; let d02 = x[0] - x[2];
     let s13 = x[1] + x[3]; let d13 = x[1] - x[3];
@@ -97,7 +98,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let x2 = vec2<f32>(SRC[bo + 2u*i2], SRC[bo + 2u*i2+1u]);
 
     let tw = k * (half_n / p);
-    let t  = cmul(vec2<f32>(TWIDDLE[2u*tw], TWIDDLE[2u*tw+1u]), x2);
+    let tw_im_sign = 1.0;
+    let t  = cmul(vec2<f32>(TWIDDLE[2u*tw], tw_im_sign * TWIDDLE[2u*tw+1u]), x2);
 
     let d_base = bo + 2u*(j*two_p + k);
     DST[d_base]          = x1.x + t.x; DST[d_base+1u]          = x1.y + t.y;

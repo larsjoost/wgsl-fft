@@ -1,12 +1,12 @@
 use std::any::Any;
+use std::sync::Arc;
 
-use crate::FftExecutor;
 use cudarc::cufft::{sys, CudaFft, FftDirection};
 use cudarc::driver::{CudaContext, CudaStream};
 use num_complex::Complex;
-use std::error::Error;
-use std::io::{Error as IoError, ErrorKind};
-use std::sync::Arc;
+
+use crate::error::{FftError, Result};
+use crate::FftExecutor;
 
 /// Wrapper for cuFFT (via cudarc) to compare performance with our WebGPU implementation.
 pub struct CuFft {
@@ -20,11 +20,11 @@ impl FftExecutor for CuFft {
         "cuFFT (NVIDIA Gold Standard)"
     }
 
-    fn fft(&self, inputs: &[Vec<Complex<f32>>]) -> Result<Vec<Vec<Complex<f32>>>, Box<dyn Error>> {
+    fn fft(&self, inputs: &[Vec<Complex<f32>>]) -> Result<Vec<Vec<Complex<f32>>>> {
         self.batch_fft(inputs)
     }
 
-    fn ifft(&self, inputs: &[Vec<Complex<f32>>]) -> Result<Vec<Vec<Complex<f32>>>, Box<dyn Error>> {
+    fn ifft(&self, inputs: &[Vec<Complex<f32>>]) -> Result<Vec<Vec<Complex<f32>>>> {
         self.batch_ifft(inputs)
     }
 
@@ -39,19 +39,20 @@ impl FftExecutor for CuFft {
 
 impl CuFft {
     /// Create a new cuFFT instance.
-    pub fn new(fft_size: usize) -> Result<Self, Box<dyn Error>> {
+    pub fn new(fft_size: usize) -> Result<Self> {
         if fft_size == 0 {
-            return Err(IoError::new(ErrorKind::InvalidInput, "fft_size must be > 0").into());
+            return Err(FftError::InvalidSize("fft_size must be > 0".to_string()));
         }
 
-        let ctx = CudaContext::new(0)?;
+        let ctx = CudaContext::new(0).map_err(|e| FftError::BackendError(e.to_string()))?;
         let stream = ctx.default_stream();
         let single_plan = CudaFft::plan_1d(
             fft_size as i32,
             sys::cufftType::CUFFT_C2C,
             1,
             stream.clone(),
-        )?;
+        )
+        .map_err(|e| FftError::BackendError(e.to_string()))?;
 
         Ok(Self {
             plan: single_plan,
@@ -60,45 +61,35 @@ impl CuFft {
         })
     }
 
-    fn ensure_input_size(&self, input: &[Complex<f32>]) -> Result<(), Box<dyn Error>> {
+    fn ensure_input_size(&self, input: &[Complex<f32>]) -> Result<()> {
         if input.len() != self.fft_size {
-            return Err(IoError::new(
-                ErrorKind::InvalidInput,
-                format!(
-                    "input length {} does not match planned fft_size {}",
-                    input.len(),
-                    self.fft_size
-                ),
-            )
-            .into());
+            return Err(FftError::ValidationError(format!(
+                "input length {} does not match planned fft_size {}",
+                input.len(),
+                self.fft_size
+            )));
         }
         Ok(())
     }
 
-    fn validate_batch_inputs(inputs: &[Vec<Complex<f32>>]) -> Result<usize, Box<dyn Error>> {
+    fn validate_batch_inputs(inputs: &[Vec<Complex<f32>>]) -> Result<usize> {
         if inputs.is_empty() {
             return Ok(0);
         }
 
         let n = inputs[0].len();
         if n == 0 {
-            return Err(IoError::new(
-                ErrorKind::InvalidInput,
-                "batch input vectors must be non-empty",
-            )
-            .into());
+            return Err(FftError::ValidationError(
+                "batch input vectors must be non-empty".to_string(),
+            ));
         }
 
         for (idx, input) in inputs.iter().enumerate() {
             if input.len() != n {
-                return Err(IoError::new(
-                    ErrorKind::InvalidInput,
-                    format!(
-                        "all batch inputs must have the same length; input[0]={n}, input[{idx}]={}",
-                        input.len()
-                    ),
-                )
-                .into());
+                return Err(FftError::BatchError(format!(
+                    "all batch inputs must have the same length; input[0]={n}, input[{idx}]={}",
+                    input.len()
+                )));
             }
         }
 
@@ -144,32 +135,52 @@ impl CuFft {
     }
 
     /// Perform forward FFT.
-    pub fn fft(&self, input: &[Complex<f32>]) -> Result<Vec<Complex<f32>>, Box<dyn Error>> {
+    pub fn fft(&self, input: &[Complex<f32>]) -> Result<Vec<Complex<f32>>> {
         self.ensure_input_size(input)?;
 
         let host_input = Self::to_cuda_complex(input);
-        let mut d_input = self.stream.clone_htod(&host_input)?;
-        let mut d_output = self.stream.alloc_zeros::<sys::float2>(self.fft_size)?;
+        let mut d_input = self
+            .stream
+            .clone_htod(&host_input)
+            .map_err(|e| FftError::BackendError(e.to_string()))?;
+        let mut d_output = self
+            .stream
+            .alloc_zeros::<sys::float2>(self.fft_size)
+            .map_err(|e| FftError::BackendError(e.to_string()))?;
 
         self.plan
-            .exec_c2c(&mut d_input, &mut d_output, FftDirection::Forward)?;
+            .exec_c2c(&mut d_input, &mut d_output, FftDirection::Forward)
+            .map_err(|e| FftError::BackendError(e.to_string()))?;
 
-        let host_output: Vec<sys::float2> = self.stream.clone_dtoh(&d_output)?;
+        let host_output: Vec<sys::float2> = self
+            .stream
+            .clone_dtoh(&d_output)
+            .map_err(|e| FftError::BackendError(e.to_string()))?;
         Ok(Self::from_cuda_complex(&host_output))
     }
 
     /// Perform inverse FFT.
-    pub fn ifft(&self, input: &[Complex<f32>]) -> Result<Vec<Complex<f32>>, Box<dyn Error>> {
+    pub fn ifft(&self, input: &[Complex<f32>]) -> Result<Vec<Complex<f32>>> {
         self.ensure_input_size(input)?;
 
         let host_input = Self::to_cuda_complex(input);
-        let mut d_input = self.stream.clone_htod(&host_input)?;
-        let mut d_output = self.stream.alloc_zeros::<sys::float2>(self.fft_size)?;
+        let mut d_input = self
+            .stream
+            .clone_htod(&host_input)
+            .map_err(|e| FftError::BackendError(e.to_string()))?;
+        let mut d_output = self
+            .stream
+            .alloc_zeros::<sys::float2>(self.fft_size)
+            .map_err(|e| FftError::BackendError(e.to_string()))?;
 
         self.plan
-            .exec_c2c(&mut d_input, &mut d_output, FftDirection::Inverse)?;
+            .exec_c2c(&mut d_input, &mut d_output, FftDirection::Inverse)
+            .map_err(|e| FftError::BackendError(e.to_string()))?;
 
-        let host_output: Vec<sys::float2> = self.stream.clone_dtoh(&d_output)?;
+        let host_output: Vec<sys::float2> = self
+            .stream
+            .clone_dtoh(&d_output)
+            .map_err(|e| FftError::BackendError(e.to_string()))?;
         let mut result = Self::from_cuda_complex(&host_output);
         Self::scale_inverse(&mut result, self.fft_size);
         Ok(result)
@@ -183,26 +194,33 @@ impl CuFft {
         flat_input: &[sys::float2],
         n: usize,
         batch_size: usize,
-    ) -> Result<Vec<sys::float2>, Box<dyn Error>> {
+    ) -> Result<Vec<sys::float2>> {
         if flat_input.is_empty() {
             return Ok(Vec::new());
         }
 
-        let mut d_input = self.stream.clone_htod(flat_input)?;
-        let mut d_output = self.stream.alloc_zeros::<sys::float2>(n * batch_size)?;
+        let mut d_input = self
+            .stream
+            .clone_htod(flat_input)
+            .map_err(|e| FftError::BackendError(e.to_string()))?;
+        let mut d_output = self
+            .stream
+            .alloc_zeros::<sys::float2>(n * batch_size)
+            .map_err(|e| FftError::BackendError(e.to_string()))?;
 
         self.plan
-            .exec_c2c(&mut d_input, &mut d_output, FftDirection::Forward)?;
+            .exec_c2c(&mut d_input, &mut d_output, FftDirection::Forward)
+            .map_err(|e| FftError::BackendError(e.to_string()))?;
 
-        let flat_output: Vec<sys::float2> = self.stream.clone_dtoh(&d_output)?;
+        let flat_output: Vec<sys::float2> = self
+            .stream
+            .clone_dtoh(&d_output)
+            .map_err(|e| FftError::BackendError(e.to_string()))?;
         Ok(flat_output)
     }
 
     /// Perform batch FFT.
-    pub fn batch_fft(
-        &self,
-        inputs: &[Vec<Complex<f32>>],
-    ) -> Result<Vec<Vec<Complex<f32>>>, Box<dyn Error>> {
+    pub fn batch_fft(&self, inputs: &[Vec<Complex<f32>>]) -> Result<Vec<Vec<Complex<f32>>>> {
         if inputs.is_empty() {
             return Ok(Vec::new());
         }
@@ -229,18 +247,28 @@ impl CuFft {
         flat_input: &[sys::float2],
         n: usize,
         batch_size: usize,
-    ) -> Result<Vec<sys::float2>, Box<dyn Error>> {
+    ) -> Result<Vec<sys::float2>> {
         if flat_input.is_empty() {
             return Ok(Vec::new());
         }
 
-        let mut d_input = self.stream.clone_htod(flat_input)?;
-        let mut d_output = self.stream.alloc_zeros::<sys::float2>(n * batch_size)?;
+        let mut d_input = self
+            .stream
+            .clone_htod(flat_input)
+            .map_err(|e| FftError::BackendError(e.to_string()))?;
+        let mut d_output = self
+            .stream
+            .alloc_zeros::<sys::float2>(n * batch_size)
+            .map_err(|e| FftError::BackendError(e.to_string()))?;
 
         self.plan
-            .exec_c2c(&mut d_input, &mut d_output, FftDirection::Inverse)?;
+            .exec_c2c(&mut d_input, &mut d_output, FftDirection::Inverse)
+            .map_err(|e| FftError::BackendError(e.to_string()))?;
 
-        let mut flat_output: Vec<sys::float2> = self.stream.clone_dtoh(&d_output)?;
+        let mut flat_output: Vec<sys::float2> = self
+            .stream
+            .clone_dtoh(&d_output)
+            .map_err(|e| FftError::BackendError(e.to_string()))?;
 
         // Apply scaling for inverse transform
         let scale = 1.0 / n as f32;
@@ -252,10 +280,7 @@ impl CuFft {
         Ok(flat_output)
     }
 
-    fn batch_ifft(
-        &self,
-        inputs: &[Vec<Complex<f32>>],
-    ) -> Result<Vec<Vec<Complex<f32>>>, Box<dyn Error>> {
+    fn batch_ifft(&self, inputs: &[Vec<Complex<f32>>]) -> Result<Vec<Vec<Complex<f32>>>> {
         if inputs.is_empty() {
             return Ok(Vec::new());
         }

@@ -2,6 +2,7 @@ use std::time::Instant;
 
 use num_complex::Complex;
 
+use crate::error::Result;
 use crate::FftExecutor;
 
 /// Outcome of validating a rival's output against the reference implementation.
@@ -53,7 +54,7 @@ pub fn benchmark_gpu_only(
     gpu_fft: &(impl crate::GpuFftTrait + crate::FftExecutor + ?Sized),
     n: usize,
     batch_size: usize,
-) -> Result<GpuOnlyResult, Box<dyn std::error::Error>> {
+) -> Result<GpuOnlyResult> {
     let log_n = n.trailing_zeros();
     let sc = gpu_fft.get_or_build_size_cache(n, log_n);
 
@@ -107,7 +108,7 @@ pub fn benchmark_gpu_pipeline(
     rival: &dyn FftExecutor,
     n: usize,
     batch_size: usize,
-) -> Result<GpuOnlyResult, Box<dyn std::error::Error>> {
+) -> Result<GpuOnlyResult> {
     // Prepare input data (this is part of setup, not measured)
     let inputs: Vec<Vec<Complex<f32>>> = (0..batch_size)
         .map(|_| {
@@ -290,10 +291,9 @@ fn validate(result: &[Vec<Complex<f32>>], reference: &[Vec<Complex<f32>>]) -> Va
         }
     }
     if max_err <= VALIDATION_TOLERANCE {
-        ValidationOutcome::Pass
-    } else {
-        ValidationOutcome::Fail { max_error: max_err }
+        return ValidationOutcome::Pass;
     }
+    ValidationOutcome::Fail { max_error: max_err }
 }
 
 #[cfg(test)]

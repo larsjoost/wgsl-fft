@@ -1568,6 +1568,7 @@ dependencies = [
  "pollster",
  "rocm-rs",
  "rustfft",
+ "thiserror",
  "wgpu",
 ]
 

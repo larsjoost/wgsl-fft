@@ -4,6 +4,7 @@ use std::num::NonZeroU64;
 
 use num_complex::Complex;
 
+use crate::error::Result;
 use crate::FftExecutor;
 
 // -- WGSL: Stockham Radix-8 DIT --
@@ -783,7 +784,7 @@ impl ClaudeFft {
         &self,
         inputs: &[Vec<Complex<f32>>],
         inverse: bool,
-    ) -> Result<Vec<Vec<Complex<f32>>>, Box<dyn std::error::Error>> {
+    ) -> Result<Vec<Vec<Complex<f32>>>> {
         if inputs.is_empty() {
             return Ok(Vec::new());
         }
@@ -883,16 +884,10 @@ impl FftExecutor for ClaudeFft {
     fn name(&self) -> &str {
         "Claude (R8/4/2 + Local N<=1024)"
     }
-    fn fft(
-        &self,
-        inputs: &[Vec<Complex<f32>>],
-    ) -> Result<Vec<Vec<Complex<f32>>>, Box<dyn std::error::Error>> {
+    fn fft(&self, inputs: &[Vec<Complex<f32>>]) -> Result<Vec<Vec<Complex<f32>>>> {
         self.transform_batch_internal(inputs, false)
     }
-    fn ifft(
-        &self,
-        inputs: &[Vec<Complex<f32>>],
-    ) -> Result<Vec<Vec<Complex<f32>>>, Box<dyn std::error::Error>> {
+    fn ifft(&self, inputs: &[Vec<Complex<f32>>]) -> Result<Vec<Vec<Complex<f32>>>> {
         self.transform_batch_internal(inputs, true)
     }
     fn as_any(&self) -> &dyn Any {

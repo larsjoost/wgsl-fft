@@ -4,6 +4,7 @@ use std::num::NonZeroU64;
 
 use num_complex::Complex;
 
+use crate::error::Result;
 use crate::FftExecutor;
 
 // ── WGSL: Single-dispatch local-memory radix-4 FFT for N = 256 ───────────────
@@ -717,7 +718,7 @@ impl CodexFft {
         &self,
         inputs: &[Vec<Complex<f32>>],
         inverse: bool,
-    ) -> Result<Vec<Vec<Complex<f32>>>, Box<dyn std::error::Error>> {
+    ) -> Result<Vec<Vec<Complex<f32>>>> {
         if inputs.is_empty() {
             return Ok(Vec::new());
         }
@@ -823,17 +824,11 @@ impl FftExecutor for CodexFft {
         "Codex (Stockham Radix-8/4/2 Mixed, HW-Preferred)"
     }
 
-    fn fft(
-        &self,
-        inputs: &[Vec<Complex<f32>>],
-    ) -> Result<Vec<Vec<Complex<f32>>>, Box<dyn std::error::Error>> {
+    fn fft(&self, inputs: &[Vec<Complex<f32>>]) -> Result<Vec<Vec<Complex<f32>>>> {
         self.transform_batch_internal(inputs, false)
     }
 
-    fn ifft(
-        &self,
-        inputs: &[Vec<Complex<f32>>],
-    ) -> Result<Vec<Vec<Complex<f32>>>, Box<dyn std::error::Error>> {
+    fn ifft(&self, inputs: &[Vec<Complex<f32>>]) -> Result<Vec<Vec<Complex<f32>>>> {
         self.transform_batch_internal(inputs, true)
     }
 

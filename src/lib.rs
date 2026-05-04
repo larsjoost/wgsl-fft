@@ -28,6 +28,10 @@
 //! - [`pipelines`] - Pre-compiled FFT pipelines for embedding in larger GPU pipelines
 //! - [`shaders`] - WGSL compute shader source code
 //! - [`benchmark`] - Benchmarking utilities
+//! - [`error`] - Error types for FFT operations
+
+mod error;
+pub use error::{FftError, Result};
 
 pub mod benchmark;
 #[cfg(feature = "cuda")]

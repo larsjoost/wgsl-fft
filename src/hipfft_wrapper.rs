@@ -1,7 +1,7 @@
+use crate::error::{FftError, Result};
 use crate::FftExecutor;
 use num_complex::Complex;
-use std::error::Error;
-use std::fmt;
+use thiserror::Error;
 
 // ── hipFFT C API (FFI) ─────────────────────────────────────────────────────
 // Compatible with both AMD ROCm and NVIDIA HIP-CUDA backends.
@@ -55,22 +55,22 @@ extern "C" {
 
 // ── Error type ───────────────────────────────────────────────────────────────
 
-#[derive(Debug)]
+/// Error type for hipFFT operations
+#[derive(Debug, Error)]
+#[error("hipFFT error code {0}")]
 struct HipFftError(i32);
 
-impl fmt::Display for HipFftError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "hipFFT error code {}", self.0)
-    }
-}
-
-impl Error for HipFftError {}
-
-fn check(code: i32) -> Result<(), HipFftError> {
+fn check(code: i32) -> std::result::Result<(), HipFftError> {
     if code == 0 {
         Ok(())
     } else {
         Err(HipFftError(code))
+    }
+}
+
+impl From<HipFftError> for FftError {
+    fn from(e: HipFftError) -> Self {
+        FftError::BackendError(format!("hipFFT error: {}", e.0))
     }
 }
 
@@ -81,29 +81,27 @@ pub struct HipFft {
 }
 
 impl HipFft {
-    pub fn new(fft_size: usize) -> Result<Self, Box<dyn Error>> {
+    pub fn new(fft_size: usize) -> Result<Self> {
         // /dev/kfd is the AMD Kernel Fusion Driver — only present when an AMD GPU
         // with ROCm is active. Without it, calling hipfftCreate segfaults immediately.
         if !std::path::Path::new("/dev/kfd").exists() {
-            return Err("No AMD GPU detected (/dev/kfd absent); hipFFT requires ROCm".into());
+            return Err(FftError::BackendError(
+                "No AMD GPU detected (/dev/kfd absent); hipFFT requires ROCm".to_string(),
+            ));
         }
 
         // Probe by creating and immediately destroying a tiny plan.
         let mut probe: hipfftHandle = 0;
         // SAFETY: /dev/kfd presence verified above; hipFFT C API requires raw pointers with no safe wrapper.
         unsafe {
-            check(hipfftCreate(&mut probe))?;
-            check(hipfftPlan1d(&mut probe, 1, HIPFFT_C2C, 1))?;
+            check(hipfftCreate(&mut probe)).map_err(FftError::from)?;
+            check(hipfftPlan1d(&mut probe, 1, HIPFFT_C2C, 1)).map_err(FftError::from)?;
             hipfftDestroy(probe);
         }
         Ok(Self { fft_size })
     }
 
-    fn exec_batch(
-        &self,
-        inputs: &[Vec<Complex<f32>>],
-        direction: i32,
-    ) -> Result<Vec<Vec<Complex<f32>>>, Box<dyn Error>> {
+    fn exec_batch(&self, inputs: &[Vec<Complex<f32>>], direction: i32) -> Result<Vec<Vec<Complex<f32>>>> {
         if inputs.is_empty() {
             return Ok(Vec::new());
         }
@@ -123,35 +121,38 @@ impl HipFft {
         unsafe {
             let mut d_in: *mut std::ffi::c_void = std::ptr::null_mut();
             let mut d_out: *mut std::ffi::c_void = std::ptr::null_mut();
-            check(hipMalloc(&mut d_in, byte_count))?;
-            check(hipMalloc(&mut d_out, byte_count))?;
+            check(hipMalloc(&mut d_in, byte_count)).map_err(FftError::from)?;
+            check(hipMalloc(&mut d_out, byte_count)).map_err(FftError::from)?;
 
             check(hipMemcpy(
                 d_in,
                 host_in.as_ptr() as *const std::ffi::c_void,
                 byte_count,
                 HIP_MEMCPY_HOST_TO_DEVICE,
-            ))?;
+            ))
+            .map_err(FftError::from)?;
 
             let mut plan: hipfftHandle = 0;
-            check(hipfftCreate(&mut plan))?;
-            check(hipfftPlan1d(&mut plan, n as i32, HIPFFT_C2C, batch as i32))?;
+            check(hipfftCreate(&mut plan)).map_err(FftError::from)?;
+            check(hipfftPlan1d(&mut plan, n as i32, HIPFFT_C2C, batch as i32)).map_err(FftError::from)?;
 
             check(hipfftExecC2C(
                 plan,
                 d_in as *mut hipfftComplex,
                 d_out as *mut hipfftComplex,
                 direction,
-            ))?;
+            ))
+            .map_err(FftError::from)?;
 
-            check(hipDeviceSynchronize())?;
+            check(hipDeviceSynchronize()).map_err(FftError::from)?;
 
             check(hipMemcpy(
                 host_in.as_mut_ptr() as *mut std::ffi::c_void,
                 d_out,
                 byte_count,
                 HIP_MEMCPY_DEVICE_TO_HOST,
-            ))?;
+            ))
+            .map_err(FftError::from)?;
 
             hipfftDestroy(plan);
             hipFree(d_in);
@@ -183,11 +184,11 @@ impl FftExecutor for HipFft {
         "hipFFT (ROCm/HIP reference)"
     }
 
-    fn fft(&self, inputs: &[Vec<Complex<f32>>]) -> Result<Vec<Vec<Complex<f32>>>, Box<dyn Error>> {
+    fn fft(&self, inputs: &[Vec<Complex<f32>>]) -> Result<Vec<Vec<Complex<f32>>>> {
         self.exec_batch(inputs, HIPFFT_FORWARD)
     }
 
-    fn ifft(&self, inputs: &[Vec<Complex<f32>>]) -> Result<Vec<Vec<Complex<f32>>>, Box<dyn Error>> {
+    fn ifft(&self, inputs: &[Vec<Complex<f32>>]) -> Result<Vec<Vec<Complex<f32>>>> {
         self.exec_batch(inputs, HIPFFT_BACKWARD)
     }
 }

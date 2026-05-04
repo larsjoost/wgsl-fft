@@ -12,6 +12,7 @@ use wgpu::{
     BufferBindingType, ComputePipeline, Device, ShaderStages,
 };
 
+use crate::error::Result;
 use crate::shaders;
 
 /// Direction for FFT operations
@@ -76,6 +77,22 @@ fn fft_make_pipeline(
     })
 }
 
+// Pre-baked resources for a single encode_fft call (specific n, direction, input/output buffers).
+// bind_groups[0] = bit-reversal pass, bind_groups[1..] = butterfly stages.
+// params holds the uniform buffers alive (wgpu BindGroups ref-count their resources,
+// but keeping them here makes the ownership explicit).
+struct FftCallCache {
+    #[allow(dead_code)]
+    params: Vec<wgpu::Buffer>,
+    bind_groups: Vec<wgpu::BindGroup>,
+}
+
+struct FftNormCache {
+    #[allow(dead_code)]
+    params: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
+}
+
 /// Pre-compiled Cooley-Tukey Radix-2 FFT pipelines for embedding in a larger GPU pipeline.
 ///
 /// `FftPipelines` owns its wgpu device and queue. Use [`FftPipelines::device`] and
@@ -110,11 +127,27 @@ pub struct FftPipelines {
     bgl: BindGroupLayout,
     bgl_norm: BindGroupLayout,
     scratch: RefCell<std::collections::HashMap<usize, wgpu::Buffer>>,
+    // Keyed by (n, direction_as_u32, input_ptr, output_ptr)
+    call_cache: RefCell<std::collections::HashMap<(usize, u32, usize, usize), FftCallCache>>,
+    // Keyed by (n, buf_ptr)
+    norm_cache: RefCell<std::collections::HashMap<(usize, usize), FftNormCache>>,
 }
 
 impl FftPipelines {
+    /// Get buffer pair based on log2_n parity.
+    fn get_buffer_pair_for_mode<'a>(
+        log2_n: u32,
+        output_buf: &'a wgpu::Buffer,
+        scratch_buf: &'a wgpu::Buffer,
+    ) -> (&'a wgpu::Buffer, &'a wgpu::Buffer) {
+        if log2_n % 2 == 0 {
+            return (output_buf, scratch_buf);
+        }
+        (scratch_buf, output_buf)
+    }
+
     /// Initialize GPU and compile all three FFT compute pipelines.
-    pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new() -> Result<Self> {
         let instance = wgpu::Instance::default();
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
@@ -128,10 +161,9 @@ impl FftPipelines {
                 force_fallback_adapter: true,
             }))
         })?;
-        let (device, queue) =
-            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-                ..Default::default()
-            }))?;
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            ..Default::default()
+        }))?;
         Ok(Self::from_device_queue(device, queue))
     }
 
@@ -175,6 +207,8 @@ impl FftPipelines {
             bgl,
             bgl_norm,
             scratch: RefCell::new(std::collections::HashMap::new()),
+            call_cache: RefCell::new(std::collections::HashMap::new()),
+            norm_cache: RefCell::new(std::collections::HashMap::new()),
         }
     }
 
@@ -190,9 +224,9 @@ impl FftPipelines {
 
     /// Encode one FFT or IFFT into `encoder`. The result is written to `output_buf`.
     ///
-    /// An internal scratch buffer (allocated lazily per `n`) handles the ping-pong.
-    /// Compute passes within a command buffer are sequential, so one scratch buffer
-    /// per size is safe even when multiple FFTs of the same `n` are encoded back-to-back.
+    /// All bind groups and uniform buffers are cached after the first call for a given
+    /// (n, direction, input_buf, output_buf) combination — subsequent calls encode with
+    /// zero allocations.
     pub fn encode_fft(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -202,11 +236,10 @@ impl FftPipelines {
         output_buf: &wgpu::Buffer,
     ) {
         let log2_n = n.trailing_zeros();
-        let dir = direction as u32;
-        let byte_size = (n * 8) as u64; // n * sizeof(vec2<f32>)
 
-        // Ensure a scratch buffer exists for this n
+        // Ensure scratch buffer exists for this n
         {
+            let byte_size = (n * 8) as u64;
             let mut map = self.scratch.borrow_mut();
             map.entry(n).or_insert_with(|| {
                 self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -219,131 +252,151 @@ impl FftPipelines {
                 })
             });
         }
-        let scratch_map = self.scratch.borrow();
-        let scratch_buf = scratch_map.get(&n).unwrap();
 
-        // Assign the two ping-pong slots so that after log2_n butterfly passes
-        // the result naturally lands in output_buf without any extra copy.
-        // Bit-reversal writes to bufs[0]; each butterfly pass shifts current by 1.
-        // After log2_n passes, result is in bufs[log2_n % 2], so we set that to output_buf.
-        let (buf0, buf1): (&wgpu::Buffer, &wgpu::Buffer) = if log2_n % 2 == 0 {
-            (output_buf, scratch_buf)
-        } else {
-            (scratch_buf, output_buf)
-        };
+        let key = (
+            n,
+            direction as u32,
+            input_buf as *const _ as usize,
+            output_buf as *const _ as usize,
+        );
 
-        let br_params = self
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("bit_rev_params"),
-                contents: bytemuck::cast_slice(&[n as u32, log2_n, 0u32, 0u32]),
-                usage: wgpu::BufferUsages::UNIFORM,
-            });
+        // Build and cache on first call for this key
         {
-            let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("fft_bit_rev_bg"),
-                layout: &self.bgl,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: input_buf.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: buf0.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: br_params.as_entire_binding(),
-                    },
-                ],
-            });
+            let scratch_guard = self.scratch.borrow();
+            let scratch_buf = scratch_guard.get(&n).unwrap();
+            let mut cache = self.call_cache.borrow_mut();
+            if !cache.contains_key(&key) {
+                let entry = Self::build_fft_cache(
+                    &self.device, &self.bgl, n, direction, input_buf, output_buf, scratch_buf,
+                );
+                cache.insert(key, entry);
+            }
+        }
+
+        // Encode using cached bind groups — zero allocations
+        let cache_guard = self.call_cache.borrow();
+        let cached = cache_guard.get(&key).unwrap();
+
+        {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("bit_reversal_pass"),
                 timestamp_writes: None,
             });
             pass.set_pipeline(&self.pipeline_bit_reverse);
-            pass.set_bind_group(0, &bg, &[]);
+            pass.set_bind_group(0, &cached.bind_groups[0], &[]);
             pass.dispatch_workgroups((n as u32).div_ceil(256), 1, 1);
         }
 
+        for stage in 0..log2_n as usize {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("fft_butterfly_pass"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.pipeline_butterfly);
+            pass.set_bind_group(0, &cached.bind_groups[1 + stage], &[]);
+            pass.dispatch_workgroups(((n / 2) as u32).div_ceil(256), 1, 1);
+        }
+    }
+
+    fn build_fft_cache(
+        device: &Device,
+        bgl: &BindGroupLayout,
+        n: usize,
+        direction: FftDirection,
+        input_buf: &wgpu::Buffer,
+        output_buf: &wgpu::Buffer,
+        scratch_buf: &wgpu::Buffer,
+    ) -> FftCallCache {
+        let log2_n = n.trailing_zeros();
+        let dir = direction as u32;
+
+        let (buf0, buf1) = Self::get_buffer_pair_for_mode(log2_n, output_buf, scratch_buf);
+
+        let mut params = Vec::with_capacity(1 + log2_n as usize);
+        let mut bind_groups = Vec::with_capacity(1 + log2_n as usize);
+
+        // Bit-reversal pass
+        let br_params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("bit_rev_params"),
+            contents: bytemuck::cast_slice(&[n as u32, log2_n, 0u32, 0u32]),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let br_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("fft_bit_rev_bg"),
+            layout: bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: input_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: buf0.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: br_params.as_entire_binding() },
+            ],
+        });
+        params.push(br_params);
+        bind_groups.push(br_bg);
+
+        // Butterfly passes
         let bufs = [buf0, buf1];
         for stage in 0..log2_n {
             let src = bufs[stage as usize % 2];
             let dst = bufs[(stage as usize + 1) % 2];
-            let fft_params = self
-                .device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some(&format!("fft_stage{stage}_params")),
-                    contents: bytemuck::cast_slice(&[n as u32, stage, dir, 0u32]),
-                    usage: wgpu::BufferUsages::UNIFORM,
-                });
-            {
-                let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some(&format!("fft_butterfly_bg_stage{stage}")),
-                    layout: &self.bgl,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: src.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: dst.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 2,
-                            resource: fft_params.as_entire_binding(),
-                        },
-                    ],
-                });
-                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                    label: Some(&format!("fft_butterfly_stage{stage}")),
-                    timestamp_writes: None,
-                });
-                pass.set_pipeline(&self.pipeline_butterfly);
-                pass.set_bind_group(0, &bg, &[]);
-                pass.dispatch_workgroups(((n / 2) as u32).div_ceil(256), 1, 1);
-            }
+            let stage_params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(&format!("fft_stage{stage}_params")),
+                contents: bytemuck::cast_slice(&[n as u32, stage, dir, 0u32]),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+            let stage_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some(&format!("fft_butterfly_bg_stage{stage}")),
+                layout: bgl,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: src.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: dst.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 2, resource: stage_params.as_entire_binding() },
+                ],
+            });
+            params.push(stage_params);
+            bind_groups.push(stage_bg);
         }
-        // result is now in bufs[log2_n % 2] = output_buf
+
+        FftCallCache { params, bind_groups }
     }
 
     /// Encode an in-place divide-by-N pass on `buf` (IFFT normalization).
+    ///
+    /// Bind group and uniform buffer are cached after the first call for a given (n, buf).
     pub fn encode_normalize(
         &self,
         encoder: &mut wgpu::CommandEncoder,
         n: usize,
         buf: &wgpu::Buffer,
     ) {
-        let params = self
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("normalize_params"),
-                contents: bytemuck::cast_slice(&[n as u32, 0u32, 0u32, 0u32]),
-                usage: wgpu::BufferUsages::UNIFORM,
-            });
+        let key = (n, buf as *const _ as usize);
         {
-            let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("normalize_bg"),
-                layout: &self.bgl_norm,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: buf.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: params.as_entire_binding(),
-                    },
-                ],
-            });
+            let mut cache = self.norm_cache.borrow_mut();
+            if !cache.contains_key(&key) {
+                let params = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("normalize_params"),
+                    contents: bytemuck::cast_slice(&[n as u32, 0u32, 0u32, 0u32]),
+                    usage: wgpu::BufferUsages::UNIFORM,
+                });
+                let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("normalize_bg"),
+                    layout: &self.bgl_norm,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: buf.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 1, resource: params.as_entire_binding() },
+                    ],
+                });
+                cache.insert(key, FftNormCache { params, bind_group: bg });
+            }
+        }
+        let cache_guard = self.norm_cache.borrow();
+        let cached = cache_guard.get(&key).unwrap();
+        {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("normalize_pass"),
                 timestamp_writes: None,
             });
             pass.set_pipeline(&self.pipeline_normalize);
-            pass.set_bind_group(0, &bg, &[]);
+            pass.set_bind_group(0, &cached.bind_group, &[]);
             pass.dispatch_workgroups((n as u32).div_ceil(256), 1, 1);
         }
     }
