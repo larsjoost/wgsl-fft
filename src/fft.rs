@@ -207,9 +207,10 @@ impl GpuFft {
             }))
         })?;
 
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            ..Default::default()
-        }))?;
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+                ..Default::default()
+            }))?;
         Self::from_device_queue(device, queue)
     }
 
@@ -267,9 +268,10 @@ impl GpuFft {
             }))
         })?;
 
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            ..Default::default()
-        }))?;
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+                ..Default::default()
+            }))?;
         Self::with_shader_and_device(device, queue, wgsl_source, label)
     }
 
@@ -514,11 +516,7 @@ impl GpuFft {
     }
 
     /// Prepare input data for all inputs in a batch.
-    fn prepare_batch_input_data(
-        &self,
-        inputs: &[Vec<Complex<f32>>],
-        inverse: bool,
-    ) -> Vec<f32> {
+    fn prepare_batch_input_data(&self, inputs: &[Vec<Complex<f32>>], inverse: bool) -> Vec<f32> {
         let batch_size = inputs.len();
         let n = inputs[0].len();
 
@@ -534,7 +532,8 @@ impl GpuFft {
 
     /// Upload batch data to GPU buffer.
     fn upload_batch_data(&self, sc: &SizeCache, data: &[f32]) {
-        self.queue.write_buffer(&sc.buf_a, 0, bytemuck::cast_slice(data));
+        self.queue
+            .write_buffer(&sc.buf_a, 0, bytemuck::cast_slice(data));
     }
 
     /// Apply inverse transform postprocessing to all chunks.
@@ -675,16 +674,24 @@ impl GpuFft {
 
     /// Execute the compute shader pass.
     pub fn execute_compute_pass(&self, sc: &SizeCache, batch_size: u32, n: usize) {
-        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("FFT Pass"),
-        });
+        let mut enc = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("FFT Pass"),
+            });
 
         self.run_compute_pass(&mut enc, sc, batch_size);
 
         let result_buf = self.get_result_buffer(sc);
         let single_fft_bytes = (n * COMPLEX_COMPONENT_COUNT * F32_BYTE_SIZE) as u64;
 
-        enc.copy_buffer_to_buffer(result_buf, 0, &sc.staging_buf, 0, single_fft_bytes * batch_size as u64);
+        enc.copy_buffer_to_buffer(
+            result_buf,
+            0,
+            &sc.staging_buf,
+            0,
+            single_fft_bytes * batch_size as u64,
+        );
 
         self.queue.submit(std::iter::once(enc.finish()));
     }
@@ -732,7 +739,12 @@ impl GpuFft {
     }
 
     /// Dispatch legacy mode compute pass.
-    fn dispatch_legacy_mode_pass(&self, pass: &mut wgpu::ComputePass, sc: &SizeCache, batch_size: u32) {
+    fn dispatch_legacy_mode_pass(
+        &self,
+        pass: &mut wgpu::ComputePass,
+        sc: &SizeCache,
+        batch_size: u32,
+    ) {
         pass.set_pipeline(&self.pipeline);
 
         for bg in &sc.stage_bgs {
@@ -753,11 +765,10 @@ impl GpuFft {
         let total_bytes = single_fft_bytes * batch_size as u64;
         let slice = sc.staging_buf.slice(0..total_bytes);
         slice.map_async(wgpu::MapMode::Read, |_| {});
-        self.device
-            .poll(wgpu::PollType::Wait {
-                submission_index: None,
-                timeout: None,
-            })?;
+        self.device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        })?;
 
         let mapped = slice.get_mapped_range();
         let floats: &[f32] = bytemuck::cast_slice(&mapped);

@@ -101,7 +101,11 @@ impl HipFft {
         Ok(Self { fft_size })
     }
 
-    fn exec_batch(&self, inputs: &[Vec<Complex<f32>>], direction: i32) -> Result<Vec<Vec<Complex<f32>>>> {
+    fn exec_batch(
+        &self,
+        inputs: &[Vec<Complex<f32>>],
+        direction: i32,
+    ) -> Result<Vec<Vec<Complex<f32>>>> {
         if inputs.is_empty() {
             return Ok(Vec::new());
         }
@@ -134,7 +138,8 @@ impl HipFft {
 
             let mut plan: hipfftHandle = 0;
             check(hipfftCreate(&mut plan)).map_err(FftError::from)?;
-            check(hipfftPlan1d(&mut plan, n as i32, HIPFFT_C2C, batch as i32)).map_err(FftError::from)?;
+            check(hipfftPlan1d(&mut plan, n as i32, HIPFFT_C2C, batch as i32))
+                .map_err(FftError::from)?;
 
             check(hipfftExecC2C(
                 plan,

@@ -161,9 +161,10 @@ impl FftPipelines {
                 force_fallback_adapter: true,
             }))
         })?;
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            ..Default::default()
-        }))?;
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+                ..Default::default()
+            }))?;
         Ok(Self::from_device_queue(device, queue))
     }
 
@@ -267,7 +268,13 @@ impl FftPipelines {
             let mut cache = self.call_cache.borrow_mut();
             if !cache.contains_key(&key) {
                 let entry = Self::build_fft_cache(
-                    &self.device, &self.bgl, n, direction, input_buf, output_buf, scratch_buf,
+                    &self.device,
+                    &self.bgl,
+                    n,
+                    direction,
+                    input_buf,
+                    output_buf,
+                    scratch_buf,
                 );
                 cache.insert(key, entry);
             }
@@ -325,9 +332,18 @@ impl FftPipelines {
             label: Some("fft_bit_rev_bg"),
             layout: bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: input_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: buf0.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: br_params.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: input_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: buf0.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: br_params.as_entire_binding(),
+                },
             ],
         });
         params.push(br_params);
@@ -347,16 +363,28 @@ impl FftPipelines {
                 label: Some(&format!("fft_butterfly_bg_stage{stage}")),
                 layout: bgl,
                 entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: src.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 1, resource: dst.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 2, resource: stage_params.as_entire_binding() },
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: src.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: dst.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: stage_params.as_entire_binding(),
+                    },
                 ],
             });
             params.push(stage_params);
             bind_groups.push(stage_bg);
         }
 
-        FftCallCache { params, bind_groups }
+        FftCallCache {
+            params,
+            bind_groups,
+        }
     }
 
     /// Encode an in-place divide-by-N pass on `buf` (IFFT normalization).
@@ -372,20 +400,34 @@ impl FftPipelines {
         {
             let mut cache = self.norm_cache.borrow_mut();
             if !cache.contains_key(&key) {
-                let params = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("normalize_params"),
-                    contents: bytemuck::cast_slice(&[n as u32, 0u32, 0u32, 0u32]),
-                    usage: wgpu::BufferUsages::UNIFORM,
-                });
+                let params = self
+                    .device
+                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("normalize_params"),
+                        contents: bytemuck::cast_slice(&[n as u32, 0u32, 0u32, 0u32]),
+                        usage: wgpu::BufferUsages::UNIFORM,
+                    });
                 let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("normalize_bg"),
                     layout: &self.bgl_norm,
                     entries: &[
-                        wgpu::BindGroupEntry { binding: 0, resource: buf.as_entire_binding() },
-                        wgpu::BindGroupEntry { binding: 1, resource: params.as_entire_binding() },
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: buf.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: params.as_entire_binding(),
+                        },
                     ],
                 });
-                cache.insert(key, FftNormCache { params, bind_group: bg });
+                cache.insert(
+                    key,
+                    FftNormCache {
+                        params,
+                        bind_group: bg,
+                    },
+                );
             }
         }
         let cache_guard = self.norm_cache.borrow();
