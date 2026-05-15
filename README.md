@@ -10,6 +10,8 @@ to run in a single GPU compute pass with one `queue.submit()` call.
 **GPU-accelerated**: This library uses wgpu compute shaders for GPU acceleration.
 If no GPU is available, wgpu's fallback adapter provides CPU-based software rendering.
 
+**Supports both power-of-two and arbitrary FFT sizes**: Power-of-two sizes use fast Stockham Radix-4/2 GPU acceleration, while arbitrary sizes use Bluestein's algorithm.
+
 The WGSL compute kernels are embedded as raw WGSL strings in [`src/shaders.rs`](src/shaders.rs).
 
 ## Usage
@@ -59,6 +61,19 @@ let roundtrip_error = batch_inputs[0].iter().zip(reconstructed_batch[0].iter())
 println!("Max roundtrip error: {roundtrip_error:.2e}");
 ```
 
+### Arbitrary (Non-Power-of-Two) Sizes
+
+```rust
+// Non-power-of-two FFT (e.g., 150 samples)
+let arbitrary_input = vec![vec![Complex::new(1.0, 0.0); 150]];
+let arbitrary_spectrum = fft.fft(&arbitrary_input)?;
+assert_eq!(arbitrary_spectrum[0].len(), 150);
+
+// Non-power-of-two IFFT
+let arbitrary_reconstructed = fft.ifft(&arbitrary_spectrum)?;
+assert_eq!(arbitrary_reconstructed[0].len(), 150);
+```
+
 ## Batch Processing Features
 
 **NEW**: The library now supports efficient batch processing of multiple FFTs/IFFTs:
@@ -93,8 +108,8 @@ for (i, spectrum) in spectra.iter().enumerate() {
 - A wgpu-capable GPU (Vulkan, Metal, DX12, or WebGPU).
 - Input length must be **non-empty**.
 - All vectors in a batch must have the same length.
-- For **power-of-two sizes**: Uses fast Stockham Radix-4/2 GPU acceleration.
-- For **arbitrary sizes**: Uses Bluestein's algorithm (CPU-based fallback via rustfft).
+- **Power-of-two sizes**: Uses fast Stockham Radix-4/2 GPU acceleration.
+- **Arbitrary sizes**: Uses Bluestein's algorithm (automatically selected for non-power-of-two lengths).
 
 ## Module Structure
 
@@ -114,12 +129,18 @@ All public types are re-exported from the crate root, so you can use `wgsl_fft::
 
 ## Algorithm
 
-**Stockham autosort** formulation with single-pass execution:
+**Stockham autosort** formulation with single-pass execution (power-of-two sizes):
 
 - **Single compute pass**: All log₂(N) butterfly stages execute in one `queue.submit()` call
 - **Ping-pong buffers**: Even stages read from buffer A and write to buffer B; odd stages read from B and write to A
 - **Natural order output**: No separate bit-reversal pass needed due to autosort property
 - **Memory efficient**: No inter-stage synchronization required since consecutive stages access different buffers
+
+**Bluestein's algorithm** (arbitrary sizes):
+
+- Automatically used for non-power-of-two input lengths
+- Provides correct FFT results for any valid input size
+- Seamlessly integrated — the same `fft()` and `ifft()` methods work for all sizes
 
 **Performance characteristics** (release build, NVIDIA GPU):
 
