@@ -7,7 +7,7 @@
 //!
 //! - **GPU-accelerated**: Uses wgpu compute shaders for high-performance FFT computation.
 //! - **Stockham Radix-4/2**: Fast algorithm for power-of-two FFT sizes.
-//! - **Arbitrary sizes**: Bluestein's algorithm for non-power-of-two sizes (CPU fallback).
+//! - **Arbitrary sizes**: Bluestein's algorithm for non-power-of-two sizes (GPU-accelerated via power-of-2 FFTs).
 //! - **Batch processing**: Efficiently process multiple FFTs in a single call.
 //! - **Fallback support**: Automatically falls back to CPU software rendering if no GPU is available.
 //!

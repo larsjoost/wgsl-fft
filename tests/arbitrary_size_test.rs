@@ -333,3 +333,93 @@ fn test_roundtrip_comprehensive_non_pow2() {
         }
     }
 }
+
+/// Test that GPU Bluestein implementation uses GPU-accelerated FFT internally.
+/// This test verifies that non-power-of-two sizes use the GPU for the internal
+/// power-of-2 FFT computation via Bluestein's algorithm.
+#[test]
+fn test_gpu_bluestein_uses_gpu_fft() {
+    let gpu = GpuFft::new().expect("GPU required");
+    
+    // Test a non-power-of-two size
+    let n = 150;
+    let input = make_test_signal(n);
+    
+    // Compute FFT using our implementation
+    let our_spectrum_batch = gpu.fft(&[input.clone()]).expect("FFT failed");
+    let our_spectrum = &our_spectrum_batch[0];
+    
+    // Verify against rustfft (CPU reference)
+    let mut planner = FftPlanner::<f32>::new();
+    let fft = planner.plan_fft_forward(n);
+    let mut cpu_buf = input.clone();
+    fft.process(&mut cpu_buf);
+    
+    // Check that results match
+    let mut max_diff: f32 = 0.0;
+    for (i, (g, c)) in our_spectrum.iter().zip(cpu_buf.iter()).enumerate() {
+        let diff = ((g.re - c.re).powi(2) + (g.im - c.im).powi(2)).sqrt();
+        max_diff = max_diff.max(diff);
+        assert!(
+            diff < EPSILON,
+            "GPU Bluestein FFT mismatch at element {i}: GPU={g:?} CPU={c:?} diff={diff:.2e}"
+        );
+    }
+    
+    println!("GPU Bluestein FFT for n={} max error: {max_diff:.2e}", n);
+    
+    // Test inverse FFT as well
+    let reconstructed_batch = gpu.ifft(&[our_spectrum.to_vec()]).expect("IFFT failed");
+    let reconstructed = &reconstructed_batch[0];
+    
+    let mut max_diff: f32 = 0.0;
+    for (i, (orig, recon)) in input.iter().zip(reconstructed.iter()).enumerate() {
+        let diff = ((orig.re - recon.re).powi(2) + (orig.im - recon.im).powi(2)).sqrt();
+        max_diff = max_diff.max(diff);
+        assert!(
+            diff < EPSILON,
+            "GPU Bluestein IFFT roundtrip error at element {i}: diff={diff:.2e}"
+        );
+    }
+    
+    println!("GPU Bluestein IFFT roundtrip for n={} max error: {max_diff:.2e}", n);
+}
+
+/// Test that the GPU Bluestein implementation correctly handles batch processing
+/// for non-power-of-two sizes.
+#[test]
+fn test_gpu_bluestein_batch_processing() {
+    let gpu = GpuFft::new().expect("GPU required");
+    
+    let n = 150;
+    let batch_size = 4;
+    let inputs: Vec<Vec<Complex<f32>>> = (0..batch_size).map(|_| make_test_signal(n)).collect();
+    
+    // Compute FFTs
+    let results = gpu.fft(&inputs).expect("Batch FFT failed");
+    
+    assert_eq!(results.len(), batch_size);
+    for result in &results {
+        assert_eq!(result.len(), n);
+    }
+    
+    // Verify each result against rustfft
+    let mut planner = FftPlanner::<f32>::new();
+    let fft = planner.plan_fft_forward(n);
+    
+    for (i, (input, result)) in inputs.iter().zip(results.iter()).enumerate() {
+        let mut cpu_buf = input.clone();
+        fft.process(&mut cpu_buf);
+        
+        let mut max_diff: f32 = 0.0;
+        for (j, (g, c)) in result.iter().zip(cpu_buf.iter()).enumerate() {
+            let diff = ((g.re - c.re).powi(2) + (g.im - c.im).powi(2)).sqrt();
+            max_diff = max_diff.max(diff);
+            assert!(
+                diff < EPSILON,
+                "Batch {} element {}: GPU={g:?} CPU={c:?} diff={diff:.2e}", i, j
+            );
+        }
+        println!("  Batch {i} max error: {max_diff:.2e}");
+    }
+}

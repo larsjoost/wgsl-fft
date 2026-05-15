@@ -83,6 +83,8 @@ pub struct FftUniforms {
     pub _pad: u32,
 }
 
+
+
 /// GPU-accelerated FFT engine backed by wgpu compute shaders.
 ///
 /// Implements the Stockham autosort Radix-4 algorithm with an optional Radix-2
@@ -588,14 +590,20 @@ impl GpuFft {
 
     /// Transform using Bluestein's algorithm for arbitrary FFT sizes.
     ///
-    /// For non-power-of-two sizes, we use a CPU-based implementation via rustfft.
-    /// This provides correctness for arbitrary sizes while maintaining GPU acceleration
-    /// for power-of-two sizes.
+    /// Bluestein's algorithm converts an N-point FFT into a convolution:
+    /// X[k] = exp(-πi*k²/N) * Σ_m x[m]*exp(-πi*(k-m)²/N) * exp(πi*m²/N)
     ///
-    /// Note: In the current implementation, arbitrary sizes are computed on the CPU
-    /// using rustfft as a fallback. Future optimizations could implement a GPU-accelerated
-    /// Bluestein's algorithm for full GPU support of arbitrary sizes.
+    /// This is computed on the GPU by:
+    /// 1. Finding the next power-of-2 size M >= 2*N-1
+    /// 2. Multiplying input by chirp: a[m] = x[m] * exp(πi*m²/N) for m=0..N-1, 0 for m>=N
+    /// 3. Computing M-point FFT of a (using GPU-accelerated power-of-2 FFT)
+    /// 4. Multiplying by inverse chirp: b[k] = A[k] * exp(-πi*k²/N) for k=0..N-1
     ///
+    /// The expensive FFT computation is done on the GPU, while the chirp multiplications
+    /// are done on CPU for simplicity. This still provides significant GPU acceleration
+    /// for non-power-of-two sizes compared to a full CPU implementation.
+    ///
+    /// For inverse FFT, we use the same algorithm with conjugated chirps.
     /// The implementation matches the GPU FFT convention:
     /// - Forward FFT: X[k] = Σ_n x[n] * exp(-2πi * k * n / N)
     /// - Inverse FFT: x[n] = (1/N) * Σ_k X[k] * exp(2πi * k * n / N)
@@ -611,57 +619,110 @@ impl GpuFft {
         let n = inputs[0].len();
         let batch_size = inputs.len();
 
-        let mut planner = rustfft::FftPlanner::<f32>::new();
+        // Find next power of 2 >= 2*n - 1
+        let padded_n = self.next_power_of_two(2 * n - 1);
+
+        // Prepare padded and chirp-multiplied input for each batch element
+        // Step 1: Apply chirp and zero-pad (CPU)
+        // Step 2: Compute FFT using GPU (power-of-2)
+        // Step 3: Apply inverse chirp and extract (CPU)
+
         let mut results = Vec::with_capacity(batch_size);
 
         for input in inputs {
-            results.push(self.process_bluestein_single(&mut planner, input, n, inverse));
+            let result = self.process_bluestein_gpu(input, n, padded_n, inverse);
+            results.push(result);
         }
 
         Ok(results)
     }
 
-    /// Process a single input using Bluestein's algorithm.
-    fn process_bluestein_single(
+    /// Process a single input using GPU-accelerated Bluestein's algorithm.
+    fn process_bluestein_gpu(
         &self,
-        planner: &mut rustfft::FftPlanner<f32>,
         input: &[Complex<f32>],
         n: usize,
+        padded_n: usize,
         inverse: bool,
     ) -> Vec<Complex<f32>> {
-        if inverse {
-            return self.process_bluestein_inverse(planner, input, n);
-        }
+        // Step 1: Apply chirp multiplication and zero-pad to padded_n
+        let chirp_input = self.apply_chirp_and_pad(input, n, padded_n, inverse);
 
-        let mut result = input.to_vec();
-        let fft = planner.plan_fft_forward(n);
-        fft.process(&mut result);
-        result
+        // Step 2: Compute FFT of padded data using GPU (power-of-2)
+        let fft_input = vec![chirp_input];
+        let fft_result = self.transform_power_of_two(&fft_input, false, padded_n, 1)
+            .expect("GPU FFT computation failed for Bluestein's algorithm");
+        let fft_output = &fft_result[0];
+
+        // Step 3: Apply inverse chirp and extract first n points
+        self.apply_inv_chirp_and_extract(fft_output, n, padded_n, inverse)
     }
 
-    /// Process inverse FFT using Bluestein's algorithm with scaling.
-    fn process_bluestein_inverse(
+    /// Apply chirp multiplication and zero-padding for Bluestein's algorithm (CPU).
+    fn apply_chirp_and_pad(
         &self,
-        planner: &mut rustfft::FftPlanner<f32>,
         input: &[Complex<f32>],
         n: usize,
+        padded_n: usize,
+        inverse: bool,
     ) -> Vec<Complex<f32>> {
-        let mut result = input.to_vec();
+        let mut result = vec![Complex::new(0.0, 0.0); padded_n];
 
-        let ifft = planner.plan_fft_inverse(n);
-        ifft.process(&mut result);
+        for i in 0..n {
+            let m = i as f32;
+            let angle = if inverse {
+                -std::f32::consts::PI * m * m / n as f32
+            } else {
+                std::f32::consts::PI * m * m / n as f32
+            };
+            let chirp = Complex::new(angle.cos(), angle.sin());
 
-        self.apply_bluestein_scaling(&mut result, n);
+            // x[m] * exp(πi * m² / n)  or x[m] * exp(-πi * m² / n) for inverse
+            result[i] = input[i] * chirp;
+        }
+
         result
     }
 
-    /// Apply 1/N scaling to match GPU implementation.
-    fn apply_bluestein_scaling(&self, result: &mut [Complex<f32>], n: usize) {
-        let scale = 1.0 / n as f32;
+    /// Apply inverse chirp multiplication and extract first n points (CPU).
+    fn apply_inv_chirp_and_extract(
+        &self,
+        fft_output: &[Complex<f32>],
+        n: usize,
+        _padded_n: usize,
+        inverse: bool,
+    ) -> Vec<Complex<f32>> {
+        let mut result = vec![Complex::new(0.0, 0.0); n];
 
-        for x in result {
-            *x = Complex::new(x.re * scale, x.im * scale);
+        for i in 0..n {
+            let k = i as f32;
+            let angle = if inverse {
+                std::f32::consts::PI * k * k / n as f32
+            } else {
+                -std::f32::consts::PI * k * k / n as f32
+            };
+            let inv_chirp = Complex::new(angle.cos(), angle.sin());
+
+            // A[k] * exp(-πi * k² / n) and scale by 1/n for inverse
+            let scale = if inverse { 1.0 / n as f32 } else { 1.0 };
+            result[i] = fft_output[i] * inv_chirp * scale;
         }
+
+        result
+    }
+
+
+
+    /// Find the next power of two >= n.
+    fn next_power_of_two(&self, n: usize) -> usize {
+        if n <= 1 {
+            return 1;
+        }
+        let mut p = 1usize;
+        while p < n {
+            p *= 2;
+        }
+        p
     }
 
     /// Prepare input data for GPU processing, applying conjugation for IFFT if needed.

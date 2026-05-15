@@ -10,7 +10,7 @@ to run in a single GPU compute pass with one `queue.submit()` call.
 **GPU-accelerated**: This library uses wgpu compute shaders for GPU acceleration.
 If no GPU is available, wgpu's fallback adapter provides CPU-based software rendering.
 
-**Supports both power-of-two and arbitrary FFT sizes**: Power-of-two sizes use fast Stockham Radix-4/2 GPU acceleration, while arbitrary sizes use Bluestein's algorithm.
+**Supports both power-of-two and arbitrary FFT sizes**: Power-of-two sizes use fast Stockham Radix-4/2 GPU acceleration, while arbitrary sizes use Bluestein's algorithm with GPU-accelerated power-of-2 FFTs (no CPU fallback for the FFT computation).
 
 The WGSL compute kernels are embedded as raw WGSL strings in [`src/shaders.rs`](src/shaders.rs).
 
@@ -109,7 +109,7 @@ for (i, spectrum) in spectra.iter().enumerate() {
 - Input length must be **non-empty**.
 - All vectors in a batch must have the same length.
 - **Power-of-two sizes**: Uses fast Stockham Radix-4/2 GPU acceleration.
-- **Arbitrary sizes**: Uses Bluestein's algorithm (automatically selected for non-power-of-two lengths).
+- **Arbitrary sizes**: Uses Bluestein's algorithm with GPU-accelerated power-of-2 FFTs (no CPU fallback).
 
 ## Module Structure
 
@@ -139,6 +139,7 @@ All public types are re-exported from the crate root, so you can use `wgsl_fft::
 **Bluestein's algorithm** (arbitrary sizes):
 
 - Automatically used for non-power-of-two input lengths
+- Uses GPU-accelerated power-of-2 FFTs internally for the expensive convolution computation
 - Provides correct FFT results for any valid input size
 - Seamlessly integrated — the same `fft()` and `ifft()` methods work for all sizes
 
