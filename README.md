@@ -10,7 +10,7 @@ to run in a single GPU compute pass with one `queue.submit()` call.
 **GPU-accelerated**: This library uses wgpu compute shaders for GPU acceleration.
 If no GPU is available, wgpu's fallback adapter provides CPU-based software rendering.
 
-**Supports both power-of-two and arbitrary FFT sizes**: Power-of-two sizes use fast Stockham Radix-4/2 GPU acceleration, while arbitrary sizes use Bluestein's algorithm with GPU-accelerated power-of-2 FFTs (no CPU fallback for the FFT computation).
+**Supports both power-of-two and arbitrary FFT sizes**: Power-of-two sizes use fast Stockham Radix-4/2 GPU acceleration, while arbitrary sizes use Bluestein's algorithm. The implementation is fully GPU-accelerated for all sizes and optimized for batch processing.
 
 The WGSL compute kernels are embedded as raw WGSL strings in [`src/shaders.rs`](src/shaders.rs).
 
@@ -139,8 +139,10 @@ All public types are re-exported from the crate root, so you can use `wgsl_fft::
 **Bluestein's algorithm** (arbitrary sizes):
 
 - Automatically used for non-power-of-two input lengths
+- Converts any size $N$ FFT into a power-of-two convolution of size $M \ge 2N-1$
 - Uses GPU-accelerated power-of-2 FFTs internally for the expensive convolution computation
-- Provides correct FFT results for any valid input size
+- **High precision**: Uses `f64` for all precomputations (twiddle factors and chirps) to maintain accuracy
+- **Cached**: Precomputed chirp FFTs are cached to eliminate redundant work for repeated sizes
 - Seamlessly integrated — the same `fft()` and `ifft()` methods work for all sizes
 
 **Performance characteristics** (release build, NVIDIA GPU):

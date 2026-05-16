@@ -83,8 +83,6 @@ pub struct FftUniforms {
     pub _pad: u32,
 }
 
-
-
 /// GPU-accelerated FFT engine backed by wgpu compute shaders.
 ///
 /// Implements the Stockham autosort Radix-4 algorithm with an optional Radix-2
@@ -249,11 +247,13 @@ impl GpuFft {
 
         let pipeline = compile(shaders::R4_WGSL, "stockham_r4");
         let pipeline_r2 = Some(compile(shaders::R2_WGSL, "stockham_r2"));
-        
+
         // Bluestein algorithm pipelines for arbitrary size FFT (fully GPU-accelerated)
         let pipeline_bluestein_chirp = compile(shaders::BLUESTEIN_CHIRP_WGSL, "bluestein_chirp");
-        let pipeline_bluestein_inv_chirp = compile(shaders::BLUESTEIN_INV_CHIRP_WGSL, "bluestein_inv_chirp");
-        let pipeline_bluestein_zero_pad = compile(shaders::BLUESTEIN_ZERO_PAD_WGSL, "bluestein_zero_pad");
+        let pipeline_bluestein_inv_chirp =
+            compile(shaders::BLUESTEIN_INV_CHIRP_WGSL, "bluestein_inv_chirp");
+        let pipeline_bluestein_zero_pad =
+            compile(shaders::BLUESTEIN_ZERO_PAD_WGSL, "bluestein_zero_pad");
 
         Ok(Self {
             device,
@@ -337,9 +337,12 @@ impl GpuFft {
                 cache: None,
             })
         };
-        let pipeline_bluestein_chirp = compile_bluestein(shaders::BLUESTEIN_CHIRP_WGSL, "bluestein_chirp");
-        let pipeline_bluestein_inv_chirp = compile_bluestein(shaders::BLUESTEIN_INV_CHIRP_WGSL, "bluestein_inv_chirp");
-        let pipeline_bluestein_zero_pad = compile_bluestein(shaders::BLUESTEIN_ZERO_PAD_WGSL, "bluestein_zero_pad");
+        let pipeline_bluestein_chirp =
+            compile_bluestein(shaders::BLUESTEIN_CHIRP_WGSL, "bluestein_chirp");
+        let pipeline_bluestein_inv_chirp =
+            compile_bluestein(shaders::BLUESTEIN_INV_CHIRP_WGSL, "bluestein_inv_chirp");
+        let pipeline_bluestein_zero_pad =
+            compile_bluestein(shaders::BLUESTEIN_ZERO_PAD_WGSL, "bluestein_zero_pad");
 
         Ok(Self {
             device,
@@ -659,7 +662,8 @@ impl GpuFft {
             } else {
                 let mut b = vec![Complex::new(0.0, 0.0); m];
                 for i in 0..n {
-                    let angle = b_angle_sign * std::f64::consts::PI * (i as f64 * i as f64) / n as f64;
+                    let angle =
+                        b_angle_sign * std::f64::consts::PI * (i as f64 * i as f64) / n as f64;
                     let chirp = Complex::new(angle.cos() as f32, angle.sin() as f32);
                     b[i] = chirp;
                     if i > 0 {
@@ -715,10 +719,6 @@ impl GpuFft {
 
         Ok(results)
     }
-
-
-
-
 
     /// Find the next power of two >= n.
     fn next_power_of_two(&self, n: usize) -> usize {
