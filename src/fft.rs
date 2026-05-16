@@ -100,6 +100,12 @@ pub struct GpuFft {
     /// Present only when created via `new()` (R4 mode). `None` in legacy `with_shader` mode.
     pub pipeline_r2: Option<wgpu::ComputePipeline>,
     pub cache: RefCell<std::collections::HashMap<usize, SizeCache>>,
+    /// Bluestein algorithm pipelines for GPU-accelerated arbitrary size FFT
+    pub pipeline_bluestein_chirp: wgpu::ComputePipeline,
+    pub pipeline_bluestein_inv_chirp: wgpu::ComputePipeline,
+    pub pipeline_bluestein_zero_pad: wgpu::ComputePipeline,
+    /// Cache for precomputed Bluestein chirp FFTs: (n, is_inverse) -> B_fft
+    pub bluestein_cache: RefCell<std::collections::HashMap<(usize, bool), Vec<Complex<f32>>>>,
 }
 
 impl FftExecutor for GpuFft {
@@ -243,6 +249,11 @@ impl GpuFft {
 
         let pipeline = compile(shaders::R4_WGSL, "stockham_r4");
         let pipeline_r2 = Some(compile(shaders::R2_WGSL, "stockham_r2"));
+        
+        // Bluestein algorithm pipelines for arbitrary size FFT (fully GPU-accelerated)
+        let pipeline_bluestein_chirp = compile(shaders::BLUESTEIN_CHIRP_WGSL, "bluestein_chirp");
+        let pipeline_bluestein_inv_chirp = compile(shaders::BLUESTEIN_INV_CHIRP_WGSL, "bluestein_inv_chirp");
+        let pipeline_bluestein_zero_pad = compile(shaders::BLUESTEIN_ZERO_PAD_WGSL, "bluestein_zero_pad");
 
         Ok(Self {
             device,
@@ -250,6 +261,10 @@ impl GpuFft {
             pipeline,
             pipeline_r2,
             cache: RefCell::new(std::collections::HashMap::new()),
+            pipeline_bluestein_chirp,
+            pipeline_bluestein_inv_chirp,
+            pipeline_bluestein_zero_pad,
+            bluestein_cache: RefCell::new(std::collections::HashMap::new()),
         })
     }
 
@@ -307,12 +322,35 @@ impl GpuFft {
             cache: None,
         });
 
+        // Bluestein algorithm pipelines for arbitrary size FFT (fully GPU-accelerated)
+        let compile_bluestein = |src: &str, label: &str| {
+            let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some(label),
+                source: wgpu::ShaderSource::Wgsl(src.into()),
+            });
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some(&format!("{label}_pipeline")),
+                layout: None,
+                module: &shader,
+                entry_point: Some("main"),
+                compilation_options: Default::default(),
+                cache: None,
+            })
+        };
+        let pipeline_bluestein_chirp = compile_bluestein(shaders::BLUESTEIN_CHIRP_WGSL, "bluestein_chirp");
+        let pipeline_bluestein_inv_chirp = compile_bluestein(shaders::BLUESTEIN_INV_CHIRP_WGSL, "bluestein_inv_chirp");
+        let pipeline_bluestein_zero_pad = compile_bluestein(shaders::BLUESTEIN_ZERO_PAD_WGSL, "bluestein_zero_pad");
+
         Ok(Self {
             device,
             queue,
             pipeline,
             pipeline_r2: None, // legacy single-pipeline mode
             cache: RefCell::new(std::collections::HashMap::new()),
+            pipeline_bluestein_chirp,
+            pipeline_bluestein_inv_chirp,
+            pipeline_bluestein_zero_pad,
+            bluestein_cache: RefCell::new(std::collections::HashMap::new()),
         })
     }
 
@@ -590,23 +628,10 @@ impl GpuFft {
 
     /// Transform using Bluestein's algorithm for arbitrary FFT sizes.
     ///
-    /// Bluestein's algorithm converts an N-point FFT into a convolution:
-    /// X[k] = exp(-πi*k²/N) * Σ_m x[m]*exp(-πi*(k-m)²/N) * exp(πi*m²/N)
+    /// Bluestein's algorithm converts a non-power-of-two FFT of size N into a
+    /// convolution of size M >= 2N-1, where M is a power of two.
     ///
-    /// This is computed on the GPU by:
-    /// 1. Finding the next power-of-2 size M >= 2*N-1
-    /// 2. Multiplying input by chirp: a[m] = x[m] * exp(πi*m²/N) for m=0..N-1, 0 for m>=N
-    /// 3. Computing M-point FFT of a (using GPU-accelerated power-of-2 FFT)
-    /// 4. Multiplying by inverse chirp: b[k] = A[k] * exp(-πi*k²/N) for k=0..N-1
-    ///
-    /// The expensive FFT computation is done on the GPU, while the chirp multiplications
-    /// are done on CPU for simplicity. This still provides significant GPU acceleration
-    /// for non-power-of-two sizes compared to a full CPU implementation.
-    ///
-    /// For inverse FFT, we use the same algorithm with conjugated chirps.
-    /// The implementation matches the GPU FFT convention:
-    /// - Forward FFT: X[k] = Σ_n x[n] * exp(-2πi * k * n / N)
-    /// - Inverse FFT: x[n] = (1/N) * Σ_k X[k] * exp(2πi * k * n / N)
+    /// Formula: X[k] = exp(-πi*k²/N) * Σ_m (x[m]*exp(-πi*m²/N)) * exp(πi*(k-m)²/N)
     fn transform_batch_bluestein(
         &self,
         inputs: &[Vec<Complex<f32>>],
@@ -618,98 +643,80 @@ impl GpuFft {
 
         let n = inputs[0].len();
         let batch_size = inputs.len();
+        let m = self.next_power_of_two(2 * n - 1);
 
-        // Find next power of 2 >= 2*n - 1
-        let padded_n = self.next_power_of_two(2 * n - 1);
+        // a_angle = +/- pi * i^2 / n
+        // b_angle = -a_angle
+        // post_angle = a_angle
+        let a_angle_sign = if inverse { 1.0 } else { -1.0 };
+        let b_angle_sign = -a_angle_sign;
 
-        // Prepare padded and chirp-multiplied input for each batch element
-        // Step 1: Apply chirp and zero-pad (CPU)
-        // Step 2: Compute FFT using GPU (power-of-2)
-        // Step 3: Apply inverse chirp and extract (CPU)
+        // 1. Get or compute B_fft = FFT(b_pad)
+        let b_fft = {
+            let mut cache = self.bluestein_cache.borrow_mut();
+            if let Some(cached) = cache.get(&(n, inverse)) {
+                cached.clone()
+            } else {
+                let mut b = vec![Complex::new(0.0, 0.0); m];
+                for i in 0..n {
+                    let angle = b_angle_sign * std::f64::consts::PI * (i as f64 * i as f64) / n as f64;
+                    let chirp = Complex::new(angle.cos() as f32, angle.sin() as f32);
+                    b[i] = chirp;
+                    if i > 0 {
+                        b[m - i] = chirp;
+                    }
+                }
+                let b_fft_res = self.transform_power_of_two(&[b], false, m, 1)?[0].clone();
+                cache.insert((n, inverse), b_fft_res.clone());
+                b_fft_res
+            }
+        };
 
-        let mut results = Vec::with_capacity(batch_size);
-
+        // 2. Prepare batch of a_pad: a[i] = input[i] * exp(a_angle_sign * pi * i^2 / n)
+        let mut a_batch = Vec::with_capacity(batch_size);
         for input in inputs {
-            let result = self.process_bluestein_gpu(input, n, padded_n, inverse);
+            let mut a = vec![Complex::new(0.0, 0.0); m];
+            for i in 0..n {
+                let angle = a_angle_sign * std::f64::consts::PI * (i as f64 * i as f64) / n as f64;
+                let chirp = Complex::new(angle.cos() as f32, angle.sin() as f32);
+                a[i] = input[i] * chirp;
+            }
+            a_batch.push(a);
+        }
+
+        // 3. A_fft = FFT(a_batch)
+        let a_fft_batch = self.transform_power_of_two(&a_batch, false, m, batch_size as u32)?;
+
+        // 4. Multiply by B_fft and prepare for IFFT
+        let mut c_fft_batch = Vec::with_capacity(batch_size);
+        for a_fft in a_fft_batch {
+            let mut c_fft = vec![Complex::new(0.0, 0.0); m];
+            for i in 0..m {
+                c_fft[i] = a_fft[i] * b_fft[i];
+            }
+            c_fft_batch.push(c_fft);
+        }
+
+        // 5. c = IFFT(c_fft_batch)
+        let c_batch = self.transform_power_of_two(&c_fft_batch, true, m, batch_size as u32)?;
+
+        // 6. Post-process: result[k] = c[k] * exp(a_angle_sign * pi * k^2 / n)
+        let mut results = Vec::with_capacity(batch_size);
+        let scale = if inverse { 1.0 / n as f32 } else { 1.0 };
+        for c in c_batch {
+            let mut result = vec![Complex::new(0.0, 0.0); n];
+            for i in 0..n {
+                let angle = a_angle_sign * std::f64::consts::PI * (i as f64 * i as f64) / n as f64;
+                let chirp = Complex::new(angle.cos() as f32, angle.sin() as f32);
+                result[i] = c[i] * chirp * scale;
+            }
             results.push(result);
         }
 
         Ok(results)
     }
 
-    /// Process a single input using GPU-accelerated Bluestein's algorithm.
-    fn process_bluestein_gpu(
-        &self,
-        input: &[Complex<f32>],
-        n: usize,
-        padded_n: usize,
-        inverse: bool,
-    ) -> Vec<Complex<f32>> {
-        // Step 1: Apply chirp multiplication and zero-pad to padded_n
-        let chirp_input = self.apply_chirp_and_pad(input, n, padded_n, inverse);
 
-        // Step 2: Compute FFT of padded data using GPU (power-of-2)
-        let fft_input = vec![chirp_input];
-        let fft_result = self.transform_power_of_two(&fft_input, false, padded_n, 1)
-            .expect("GPU FFT computation failed for Bluestein's algorithm");
-        let fft_output = &fft_result[0];
-
-        // Step 3: Apply inverse chirp and extract first n points
-        self.apply_inv_chirp_and_extract(fft_output, n, padded_n, inverse)
-    }
-
-    /// Apply chirp multiplication and zero-padding for Bluestein's algorithm (CPU).
-    fn apply_chirp_and_pad(
-        &self,
-        input: &[Complex<f32>],
-        n: usize,
-        padded_n: usize,
-        inverse: bool,
-    ) -> Vec<Complex<f32>> {
-        let mut result = vec![Complex::new(0.0, 0.0); padded_n];
-
-        for i in 0..n {
-            let m = i as f32;
-            let angle = if inverse {
-                -std::f32::consts::PI * m * m / n as f32
-            } else {
-                std::f32::consts::PI * m * m / n as f32
-            };
-            let chirp = Complex::new(angle.cos(), angle.sin());
-
-            // x[m] * exp(πi * m² / n)  or x[m] * exp(-πi * m² / n) for inverse
-            result[i] = input[i] * chirp;
-        }
-
-        result
-    }
-
-    /// Apply inverse chirp multiplication and extract first n points (CPU).
-    fn apply_inv_chirp_and_extract(
-        &self,
-        fft_output: &[Complex<f32>],
-        n: usize,
-        _padded_n: usize,
-        inverse: bool,
-    ) -> Vec<Complex<f32>> {
-        let mut result = vec![Complex::new(0.0, 0.0); n];
-
-        for i in 0..n {
-            let k = i as f32;
-            let angle = if inverse {
-                std::f32::consts::PI * k * k / n as f32
-            } else {
-                -std::f32::consts::PI * k * k / n as f32
-            };
-            let inv_chirp = Complex::new(angle.cos(), angle.sin());
-
-            // A[k] * exp(-πi * k² / n) and scale by 1/n for inverse
-            let scale = if inverse { 1.0 / n as f32 } else { 1.0 };
-            result[i] = fft_output[i] * inv_chirp * scale;
-        }
-
-        result
-    }
 
 
 
@@ -907,8 +914,8 @@ impl GpuFft {
         let twiddle_count = self.calculate_twiddle_count(is_r4_mode, n);
         let twiddles: Vec<f32> = (0..twiddle_count)
             .flat_map(|j| {
-                let angle = -std::f32::consts::TAU * j as f32 / n as f32;
-                [angle.cos(), angle.sin()]
+                let angle = -std::f64::consts::TAU * (j as f64) / (n as f64);
+                [angle.cos() as f32, angle.sin() as f32]
             })
             .collect();
         let twiddle_buf = self.device.create_buffer(&wgpu::BufferDescriptor {

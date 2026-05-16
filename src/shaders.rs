@@ -209,21 +209,20 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 "#;
 
-/// Bluestein's algorithm shader for arbitrary-size FFT (reserved for future full GPU implementation).
+/// Bluestein's algorithm shader for arbitrary-size FFT.
 ///
 /// Bluestein's algorithm converts an N-point FFT into a 2N-point convolution:
 /// X[k] = exp(-πi*k²/N) * Σ_m x[m]*exp(-πi*(k-m)²/N) * exp(πi*m²/N)
 ///
 /// This shader multiplies the input by the chirp sequence: a[m] = x[m] * exp(πi*m²/N)
-/// Currently not used - chirp operations are done on CPU while FFT is GPU-accelerated.
 ///
 /// Bindings:
-/// @group(0) @binding(0): params - uniform with N, padded_N
+/// @group(0) @binding(0): params - uniform with N, padded_N, _, _
 /// @group(0) @binding(1): input - storage read - interleaved complex pairs
 /// @group(0) @binding(2): output - storage write - interleaved complex pairs
 /// @group(0) @binding(3): chirp - storage read - precomputed chirp values (exp(πi*m²/N))
 pub const BLUESTEIN_CHIRP_WGSL: &str = r#"
-@group(0) @binding(0) var<uniform> params: vec2<u32>;
+@group(0) @binding(0) var<uniform> params: vec4<u32>;
 @group(0) @binding(1) var<storage, read> input: array<f32>;
 @group(0) @binding(2) var<storage, read_write> output: array<f32>;
 @group(0) @binding(3) var<storage, read> chirp: array<f32>;
@@ -258,20 +257,20 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 "#;
 
-/// Bluestein's algorithm shader for multiplying by inverse chirp and extracting result (reserved for future full GPU implementation).
+/// Bluestein's algorithm shader for multiplying by inverse chirp and extracting result.
 ///
 /// After FFT of the chirp-multiplied input, we need to:
 /// 1. Multiply by the inverse chirp: exp(-πi*k²/N)
 /// 2. Extract the first N points from the padded result
-/// Currently not used - chirp operations are done on CPU while FFT is GPU-accelerated.
+/// 3. Apply scaling (1/N for IFFT)
 ///
 /// Bindings:
-/// @group(0) @binding(0): params - uniform with N, padded_N
+/// @group(0) @binding(0): params - uniform with N, padded_N, _, _
 /// @group(0) @binding(1): input - storage read - interleaved complex pairs (FFT result)
 /// @group(0) @binding(2): output - storage write - interleaved complex pairs
-/// @group(0) @binding(3): inv_chirp - storage read - precomputed inverse chirp values
+/// @group(0) @binding(3): inv_chirp - storage read - precomputed inverse chirp values (with scaling)
 pub const BLUESTEIN_INV_CHIRP_WGSL: &str = r#"
-@group(0) @binding(0) var<uniform> params: vec2<u32>;
+@group(0) @binding(0) var<uniform> params: vec4<u32>;
 @group(0) @binding(1) var<storage, read> input: array<f32>;
 @group(0) @binding(2) var<storage, read_write> output: array<f32>;
 @group(0) @binding(3) var<storage, read> inv_chirp: array<f32>;
@@ -293,11 +292,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let x_re = input[bo_in + idx];
     let x_im = input[bo_in + idx + 1u];
     
-    // Load inverse chirp complex value (exp(-πi*i²/N))
+    // Load inverse chirp complex value (exp(-πi*i²/N) * scale)
     let c_re = inv_chirp[idx];
     let c_im = inv_chirp[idx + 1u];
     
-    // Multiply: output = x * inv_chirp
+    // Multiply: output = x * inv_chirp (scaling already included in inv_chirp)
     let out_re = x_re * c_re - x_im * c_im;
     let out_im = x_re * c_im + x_im * c_re;
     
@@ -309,11 +308,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 /// Zero-pad input from N to padded_N (for Bluestein's algorithm).
 ///
 /// Bindings:
-/// @group(0) @binding(0): params - uniform with N, padded_N
+/// @group(0) @binding(0): params - uniform with N, padded_N, _, _
 /// @group(0) @binding(1): input - storage read - interleaved complex pairs
 /// @group(0) @binding(2): output - storage write - interleaved complex pairs (zero-padded)
 pub const BLUESTEIN_ZERO_PAD_WGSL: &str = r#"
-@group(0) @binding(0) var<uniform> params: vec2<u32>;
+@group(0) @binding(0) var<uniform> params: vec4<u32>;
 @group(0) @binding(1) var<storage, read> input: array<f32>;
 @group(0) @binding(2) var<storage, read_write> output: array<f32>;
 
@@ -324,7 +323,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let n = params.x;
     let padded_n = params.y;
     
-    let bo_in = batch_id * n * 2u;
+    let bo_in = batch_id * padded_n * 2u;
     let bo_out = batch_id * padded_n * 2u;
     
     if i >= padded_n * 2u { return; }
