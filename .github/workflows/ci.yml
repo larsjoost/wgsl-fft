@@ -19,18 +19,7 @@ jobs:
         uses: docker/setup-buildx-action@v2
       - name: Build and run CI tests in Docker
         # Use Docker to ensure consistent environment between local and CI
-        run: ./scripts/run_ci_in_docker.sh
-
-  lint:
-    name: Lint
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
-      - name: Build and run CI tests in Docker
-        # Use Docker to ensure consistent environment between local and CI
-        run: ./scripts/run_ci_in_docker.sh
+        run: chmod +x scripts/*.sh && ./scripts/run_ci_in_docker.sh
 
   doc-test:
     name: Doc Test
@@ -60,4 +49,4 @@ jobs:
             libwayland-dev \
             libxkbcommon-dev
       - name: Run benchmarks
-        run: cargo test --release --bench benchmark 2>/dev/null || echo "Benchmarks completed"
+        run: cargo test --release --bench fft_benchmark 2>/dev/null || echo "Benchmarks completed"
