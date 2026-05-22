@@ -140,16 +140,18 @@ fn twiddle(k: u32, span: u32, direction: u32) -> vec2<f32> {
     return vec2<f32>(cos(angle), sin(angle));
 }
 
-@compute @workgroup_size(256)
+@compute @workgroup_size(256, 1, 1)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = gid.x;
+    let batch_id = gid.y;
     if i >= params.n / 2u { return; }
 
+    let bo = batch_id * params.n;
     let span: u32 = 1u << (params.stage + 1u);
     let half: u32 = span >> 1u;
     let group: u32 = i / half;
     let k: u32     = i % half;
-    let even: u32  = group * span + k;
+    let even: u32  = bo + group * span + k;
     let odd: u32   = even + half;
 
     let u = input_data[even];
@@ -169,13 +171,16 @@ pub const NORMALIZE_VEC2_WGSL: &str = r#"
 @group(0) @binding(0) var<storage, read_write> data: array<vec2<f32>>;
 @group(0) @binding(1) var<uniform> params: vec4<u32>;
 
-@compute @workgroup_size(256)
+@compute @workgroup_size(256, 1, 1)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = gid.x;
+    let batch_id = gid.y;
     let n = params.x;
     if i >= n { return; }
+    
+    let idx = batch_id * n + i;
     let scale = 1.0 / f32(n);
-    data[i] = vec2<f32>(data[i].x * scale, data[i].y * scale);
+    data[idx] = vec2<f32>(data[idx].x * scale, data[idx].y * scale);
 }
 "#;
 
@@ -200,12 +205,15 @@ fn bit_reverse(x: u32, bits: u32) -> u32 {
     }
     return r;
 }
-@compute @workgroup_size(256)
+@compute @workgroup_size(256, 1, 1)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = gid.x;
+    let batch_id = gid.y;
     if i >= params.n { return; }
     let j = bit_reverse(i, params.log2_n);
-    dst[i] = src[j];
+    
+    let bo = batch_id * params.n;
+    dst[bo + i] = src[bo + j];
 }
 "#;
 

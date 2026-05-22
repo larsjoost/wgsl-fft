@@ -1,6 +1,6 @@
 [package]
 name        = "wgsl-fft"
-version     = "0.4.3"
+version     = "0.4.4"
 edition     = "2021"
 rust-version = "1.73"
 description = "GPU-accelerated FFT using Webgpu compute shaders"

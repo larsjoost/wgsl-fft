@@ -109,12 +109,13 @@ struct FftNormCache {
 /// let queue  = fft.queue();
 ///
 /// let n: usize = 1024;
-/// // allocate input_buf and output_buf as STORAGE buffers of size n * 8 bytes (scratch is managed internally)
+/// let batch_size: u32 = 1;
+/// // allocate input_buf and output_buf as STORAGE buffers of size n * 8 * batch_size bytes (scratch is managed internally)
 /// # let input_buf: wgpu::Buffer = unimplemented!();
 /// # let output_buf: wgpu::Buffer = unimplemented!();
 /// let mut encoder = device.create_command_encoder(&Default::default());
-/// fft.encode_fft(&mut encoder, n, FftDirection::Forward, &input_buf, &output_buf);
-/// fft.encode_normalize(&mut encoder, n, &output_buf);
+/// fft.encode_fft(&mut encoder, n, batch_size, FftDirection::Forward, &input_buf, &output_buf);
+/// fft.encode_normalize(&mut encoder, n, batch_size, &output_buf);
 /// queue.submit(std::iter::once(encoder.finish()));
 /// ```
 pub struct FftPipelines {
@@ -223,7 +224,7 @@ impl FftPipelines {
         &self.queue
     }
 
-    /// Encode one FFT or IFFT into `encoder`. The result is written to `output_buf`.
+    /// Encode one or more FFTs or IFFTs into `encoder`. The result is written to `output_buf`.
     ///
     /// All bind groups and uniform buffers are cached after the first call for a given
     /// (n, direction, input_buf, output_buf) combination — subsequent calls encode with
@@ -232,17 +233,18 @@ impl FftPipelines {
         &self,
         encoder: &mut wgpu::CommandEncoder,
         n: usize,
+        batch_size: u32,
         direction: FftDirection,
         input_buf: &wgpu::Buffer,
         output_buf: &wgpu::Buffer,
     ) {
         let log2_n = n.trailing_zeros();
 
-        // Ensure scratch buffer exists for this n
+        // Ensure scratch buffer exists for this n and batch_size
         {
-            let byte_size = (n * 8) as u64;
+            let byte_size = (n * 8 * batch_size as usize) as u64;
             let mut map = self.scratch.borrow_mut();
-            map.entry(n).or_insert_with(|| {
+            let buf = map.entry(n).or_insert_with(|| {
                 self.device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("fft_scratch"),
                     size: byte_size,
@@ -252,6 +254,16 @@ impl FftPipelines {
                     mapped_at_creation: false,
                 })
             });
+            if buf.size() < byte_size {
+                *buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("fft_scratch"),
+                    size: byte_size,
+                    usage: wgpu::BufferUsages::STORAGE
+                        | wgpu::BufferUsages::COPY_SRC
+                        | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+            }
         }
 
         let key = (
@@ -291,7 +303,7 @@ impl FftPipelines {
             });
             pass.set_pipeline(&self.pipeline_bit_reverse);
             pass.set_bind_group(0, &cached.bind_groups[0], &[]);
-            pass.dispatch_workgroups((n as u32).div_ceil(256), 1, 1);
+            pass.dispatch_workgroups((n as u32).div_ceil(256), batch_size, 1);
         }
 
         for stage in 0..log2_n as usize {
@@ -301,7 +313,7 @@ impl FftPipelines {
             });
             pass.set_pipeline(&self.pipeline_butterfly);
             pass.set_bind_group(0, &cached.bind_groups[1 + stage], &[]);
-            pass.dispatch_workgroups(((n / 2) as u32).div_ceil(256), 1, 1);
+            pass.dispatch_workgroups(((n / 2) as u32).div_ceil(256), batch_size, 1);
         }
     }
 
@@ -394,6 +406,7 @@ impl FftPipelines {
         &self,
         encoder: &mut wgpu::CommandEncoder,
         n: usize,
+        batch_size: u32,
         buf: &wgpu::Buffer,
     ) {
         let key = (n, buf as *const _ as usize);
@@ -439,7 +452,7 @@ impl FftPipelines {
             });
             pass.set_pipeline(&self.pipeline_normalize);
             pass.set_bind_group(0, &cached.bind_group, &[]);
-            pass.dispatch_workgroups((n as u32).div_ceil(256), 1, 1);
+            pass.dispatch_workgroups((n as u32).div_ceil(256), batch_size, 1);
         }
     }
 }
