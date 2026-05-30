@@ -20,6 +20,7 @@ The WGSL compute kernels are embedded as raw WGSL strings in [`src/shaders.rs`](
 - [Requirements](#requirements)
 - [Algorithms](#algorithms)
 - [Module Structure](#module-structure)
+- [Simple Pipeline Interface](#simple-pipeline-interface)
 - [Performance Characteristics](#performance-characteristics)
 - [Numerical Accuracy](#numerical-accuracy)
 - [Shader Development](#shader-development)
@@ -183,12 +184,271 @@ The crate is organized into the following modules:
 |--------|---------|
 | `fft` | Main FFT implementation (`GpuFft`, `FftExecutor`, `SizeCache`) |
 | `pipelines` | Pre-compiled FFT pipelines (`FftPipelines`, `FftDirection`) for embedding in larger GPU pipelines |
+| `pipeline_builder` | Simple pipeline interface (`PipelineBuilder`, `ComputeStage`, `PingPongState`, etc.) for declarative pipeline construction |
 | `shaders` | WGSL compute shader source code |
 | `benchmark` | Benchmarking utilities and throughput measurement |
 | `rivals` | Alternative FFT implementations for comparison |
 | `error` | Error types for FFT operations |
 
 All public types are re-exported from the crate root, so you can use `wgsl_fft::GpuFft` directly.
+
+## Simple Pipeline Interface
+
+For building streaming GPU pipelines with automatic buffer management, wgsl-fft provides a simple, declarative interface based on the bucket brigade pattern. This interface is designed to be used both by external consumers (like gpu-pipeline) and internally within wgsl-fft itself.
+
+### Key Concepts
+
+#### Bucket Brigade Pattern
+
+The bucket brigade pattern uses a global `PingPongState` to control buffer read/write assignments across all stages:
+- **Tick N**: All stages read from buffer index 0 and write to buffer index 1
+- **Tick N+1**: All stages read from buffer index 1 and write to buffer index 0
+
+This creates automatic data flow between stages without manual synchronization.
+
+#### Core Components
+
+| Component | Purpose |
+|-----------|---------|
+| `PingPongState` | Controls global read/write buffer indexing |
+| `PingPongBuffers` | A pair of buffers for ping-pong operations |
+| `ComputeStage` | Trait for pipeline stages that encode GPU operations |
+| `FftStage` | Built-in FFT stage (forward or inverse) |
+| `NormalizeStage` | Built-in normalization stage for IFFT scaling |
+| `PipelineBuilder` | Declarative builder for creating streaming GPU pipelines |
+| `Pipeline` | Executes stages in sequence with automatic buffer management |
+
+### Basic Usage
+
+```rust
+use wgsl_fft::pipeline_builder::{PipelineBuilder, FftDirection, PingPongState};
+use wgsl_fft::FftPipelines;
+
+// Create FftPipelines for GPU operations
+let fft_pipelines = FftPipelines::new().expect("GPU required");
+
+// Build a simple FFT->Normalize->IFFT pipeline
+let pipeline = PipelineBuilder::new(
+    fft_pipelines.device().clone(),
+    fft_pipelines.queue().clone()
+)
+.fft(FftDirection::Forward)      // Stage 1: Forward FFT
+.normalize()                     // Stage 2: Normalize (scale by 1/N)
+.fft(FftDirection::Inverse)     // Stage 3: Inverse FFT
+.build();
+
+// Execute the pipeline
+let mut state = PingPongState::default();
+let n = 1024;
+let batch_size = 1;
+
+// Execute one tick - all stages process data simultaneously
+let command_buffer = pipeline.tick(&mut state, n, batch_size);
+
+// Submit to GPU
+pipeline.queue().submit(std::iter::once(command_buffer));
+```
+
+### Managing Ping-Pong State
+
+```rust
+use wgsl_fft::pipeline_builder::PingPongState;
+
+let mut state = PingPongState::default();
+
+// Initial state: read from buffer 0, write to buffer 1
+assert_eq!(state.read_index(), 0);
+assert_eq!(state.write_index(), 1);
+
+// Toggle state for next tick
+state.toggle();
+
+// After toggle: read from buffer 1, write to buffer 0
+assert_eq!(state.read_index(), 1);
+assert_eq!(state.write_index(), 0);
+```
+
+### Creating Custom Stages
+
+You can implement the `ComputeStage` trait to create custom processing stages:
+
+```rust
+use wgsl_fft::pipeline_builder::{ComputeStage, PipelineBuilder};
+use wgpu::{CommandEncoder, Buffer};
+
+struct MyCustomStage {
+    // Your stage-specific parameters
+    scale_factor: f32,
+}
+
+impl ComputeStage for MyCustomStage {
+    fn name(&self) -> &str {
+        "my_custom_stage"
+    }
+
+    fn encode(
+        &self,
+        encoder: &mut CommandEncoder,
+        input: &Buffer,
+        output: &Buffer,
+        n: usize,
+        batch_size: u32,
+    ) {
+        // Encode your custom compute operations here
+        // Use encoder to dispatch compute shaders, etc.
+    }
+}
+
+// Use your custom stage in a pipeline
+let pipeline = PipelineBuilder::new(device, queue)
+    .fft(FftDirection::Forward)
+    .add_stage(Box::new(MyCustomStage { scale_factor: 2.0 }))
+    .build();
+```
+
+### Parameter Passing
+
+The pipeline interface supports type-safe parameter passing for stage configuration:
+
+```rust
+use wgsl_fft::pipeline_builder::PipelineParameters;
+
+let mut params = PipelineParameters::new();
+params.insert(1024usize);      // FFT size
+params.insert(1u32);          // Batch size
+params.insert(0.5f32);        // Some scale factor
+
+// Stages can retrieve their specific parameters
+if let Some(n) = params.get::<usize>() {
+    println!("FFT size: {}", n);
+}
+```
+
+### Using Ping-Pong Buffers
+
+```rust
+use wgsl_fft::pipeline_builder::{PingPongBuffers, PingPongState};
+
+// Create a pair of buffers for ping-pong operations
+let buffers = PingPongBuffers::new(&device, 1024 * 8, "fft_data");
+
+// Get read/write buffers based on current state
+let (read_buf, write_buf) = buffers.get(PingPongState::Read0Write1);
+
+// After state toggle, the read/write buffers will be swapped
+let mut state = PingPongState::Read0Write1;
+state.toggle();
+let (read_buf, write_buf) = buffers.get(state);
+// Now read_buf is buffers[1] and write_buf is buffers[0]
+```
+
+### Complete Example: FFT Pipeline
+
+Here's a complete example showing how to build and run a streaming FFT pipeline:
+
+```rust
+use wgsl_fft::pipeline_builder::{PipelineBuilder, FftDirection, PingPongState, PingPongBuffers};
+use wgsl_fft::FftPipelines;
+
+// Setup
+let fft_pipelines = FftPipelines::new().expect("GPU required");
+let device = fft_pipelines.device();
+let queue = fft_pipelines.queue();
+
+// Create input/output buffers
+let input_data = PingPongBuffers::new(device, 1024 * 8, "input");
+let output_data = PingPongBuffers::new(device, 1024 * 8, "output");
+
+// Build pipeline
+let pipeline = PipelineBuilder::new(device.clone(), queue.clone())
+    .fft(FftDirection::Forward)
+    .normalize()
+    .build();
+
+// Execute multiple ticks
+let mut state = PingPongState::default();
+let n = 1024;
+let batch_size = 1;
+
+for _ in 0..10 {
+    // Get current read/write buffers
+    let (input_read, input_write) = input_data.get(state);
+    let (output_read, output_write) = output_data.get(state);
+    
+    // Execute pipeline tick
+    let cmd_buf = pipeline.tick(&mut state, n, batch_size);
+    
+    // Submit to GPU
+    queue.submit(std::iter::once(cmd_buf));
+    
+    // State automatically toggled for next iteration
+}
+```
+
+This simple interface hides the complexity of GPU pipeline management while providing full flexibility for custom stages and configurations.
+
+## Integration with wgsl-ping-pong-pipeline
+
+wgsl-fft provides `PipelineStage` implementations that can be used as custom stages in the [wgsl-ping-pong-pipeline](https://github.com/larsjoost/wgsl-ping-pong-pipeline) library. This allows you to use wgsl-fft's FFT operations as part of a larger ping-pong pipeline without the pipeline needing to know anything about wgsl-fft.
+
+### Feature Flag
+
+The integration module is gated behind the `ping_pong` feature flag. To enable it:
+
+```toml
+[dependencies]
+wgsl-fft = { version = "0.4.4", features = ["ping_pong"] }
+```
+
+### Available Stages
+
+The `ping_pong_integration` module provides:
+
+| Stage | Purpose | Side Inputs |
+|-------|---------|-------------|
+| `FftPipelineStage::forward(n, batch_size)` | Forward FFT | None |
+| `FftPipelineStage::inverse(n, batch_size)` | Inverse FFT (with normalization) | None |
+| `MultiplyPipelineStage::new(n, batch_size)` | Complex multiplication | `"input_b"` |
+
+### Example: FFT-Based Convolution
+
+```rust
+use std::sync::Arc;
+use wgsl_ping_pong_pipeline::{Pipeline, StageConfig};
+use wgsl_fft::ping_pong_integration::{FftPipelineStage, MultiplyPipelineStage};
+
+// Create pipeline: FFT -> Multiply (with pre-computed FFT(B)) -> IFFT
+let mut pipeline = Pipeline::new()
+    .pipe_config(StageConfig::Custom(
+        Box::new(FftPipelineStage::forward(1024, 1))
+    ))
+    .pipe_config(StageConfig::Custom(
+        Box::new(MultiplyPipelineStage::new(1024, 1))
+    ))
+    .pipe_config(StageConfig::Custom(
+        Box::new(FftPipelineStage::inverse(1024, 1))
+    ))
+    .build()
+    .await?;
+
+// Add pre-computed FFT(B) as a side input
+let fft_b_buffer: Arc<wgpu::Buffer> = /* ... */;
+pipeline.add_side_input("input_b", Arc::clone(&fft_b_buffer));
+
+// Write input signal A
+let input_a: Vec<f32> = /* complex data as interleaved re/im */;
+pipeline.write_input(&input_a).await?;
+
+// Propagate through pipeline
+pipeline.tick().await?;  // FFT(A)
+pipeline.tick().await?;  // FFT(A) * FFT(B)
+pipeline.tick().await?;  // IFFT(FFT(A) * FFT(B)) = convolution result
+
+// Read output
+let result = pipeline.read_output().await?;
+```
+
+This integration demonstrates the clean separation of concerns: wgsl-ping-pong-pipeline remains completely general, while wgsl-fft provides the domain-specific FFT implementations.
 
 ## Performance Characteristics
 

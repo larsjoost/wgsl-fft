@@ -45,9 +45,21 @@ pub mod shaders;
 
 mod fft;
 mod pipelines;
+pub mod pipeline_builder;
 
 pub use fft::{FftExecutor, FftUniforms, GpuFft, GpuFftTrait, SizeCache};
 pub use pipelines::{FftDirection, FftPipelines};
+
+// Re-export the simple pipeline interface for easy access
+pub use pipeline_builder::{
+    CloneBox, ComputeStage, FftStage, NormalizeStage, PingPongBuffers, PingPongState,
+    Pipeline, PipelineBuilder,
+};
+pub use pipeline_builder::params::PipelineParameters;
+// FftDirection is already exported from pipelines
+
+// Integration with wgsl-ping-pong-pipeline
+pub mod ping_pong_integration;
 
 #[cfg(feature = "cuda")]
 pub use cufft_wrapper::CuFft;
