@@ -89,7 +89,7 @@ impl PingPongState {
 #[derive(Debug)]
 pub struct PingPongBuffers {
     /// The two buffers used for ping-pong operations.
-    /// 
+    ///
     /// Index 0 and 1 are used alternately as read and write targets
     /// based on the current PingPongState.
     pub buffers: [Buffer; 2],
@@ -617,7 +617,7 @@ mod tests {
         use params::PipelineParameters;
 
         let mut params = PipelineParameters::new();
-        
+
         params.insert(42u32);
         params.insert(3.14f32);
         params.insert("hello");

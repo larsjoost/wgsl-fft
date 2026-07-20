@@ -153,8 +153,14 @@ impl std::fmt::Debug for MultiplyPipelineStage {
             .field("batch_size", &self.batch_size)
             .field("side_input_name", &self.side_input_name)
             .field("device", &self.device.as_ref().map_or("None", |_| "Some"))
-            .field("compute_pipeline", &self.compute_pipeline.as_ref().map_or("None", |_| "Some"))
-            .field("bind_group_layout", &self.bind_group_layout.as_ref().map_or("None", |_| "Some"))
+            .field(
+                "compute_pipeline",
+                &self.compute_pipeline.as_ref().map_or("None", |_| "Some"),
+            )
+            .field(
+                "bind_group_layout",
+                &self.bind_group_layout.as_ref().map_or("None", |_| "Some"),
+            )
             .finish()
     }
 }
@@ -183,9 +189,17 @@ impl PipelineStage for MultiplyPipelineStage {
         output: &wgpu::Buffer,
         side_inputs: &HashMap<String, Arc<wgpu::Buffer>>,
     ) -> Result<()> {
-        let device = self.device.as_ref().ok_or_else(|| anyhow::anyhow!("MultiplyPipelineStage not initialized"))?;
-        let pipeline = self.compute_pipeline.as_ref().ok_or_else(|| anyhow::anyhow!("MultiplyPipelineStage compute pipeline not created"))?;
-        let bgl = self.bind_group_layout.as_ref().ok_or_else(|| anyhow::anyhow!("MultiplyPipelineStage bind group layout not created"))?;
+        let device = self
+            .device
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("MultiplyPipelineStage not initialized"))?;
+        let pipeline = self
+            .compute_pipeline
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("MultiplyPipelineStage compute pipeline not created"))?;
+        let bgl = self.bind_group_layout.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("MultiplyPipelineStage bind group layout not created")
+        })?;
 
         // Get side input buffer
         let input_b = side_inputs
@@ -300,18 +314,21 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 "#;
 
-        let shader = context.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some(&format!("{} Shader", self.name)),
-            source: wgpu::ShaderSource::Wgsl(shader_source.into()),
-        });
+        let shader = context
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some(&format!("{} Shader", self.name)),
+                source: wgpu::ShaderSource::Wgsl(shader_source.into()),
+            });
 
-        let pipeline_layout = context.device.create_pipeline_layout(
-            &wgpu::PipelineLayoutDescriptor {
-                label: Some(&format!("{} Pipeline Layout", self.name)),
-                bind_group_layouts: &[Some(self.bind_group_layout.as_ref().unwrap())],
-                immediate_size: 0,
-            },
-        );
+        let pipeline_layout =
+            context
+                .device
+                .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some(&format!("{} Pipeline Layout", self.name)),
+                    bind_group_layouts: &[Some(self.bind_group_layout.as_ref().unwrap())],
+                    immediate_size: 0,
+                });
 
         self.compute_pipeline = Some(context.device.create_compute_pipeline(
             &wgpu::ComputePipelineDescriptor {
@@ -391,14 +408,15 @@ impl PipelineStage for NormalizePipelineStage {
     ) -> Result<()> {
         self.fft_pipelines
             .encode_normalize(encoder, self.n, self.batch_size, output);
-        
+
         // Note: encode_normalize does in-place normalization on the output buffer
         // But for pipeline integration, we need to copy from input to output first
         // Actually, looking at the implementation, encode_normalize takes the buffer to normalize
         // So we need to copy input to output first, then normalize
         encoder.copy_buffer_to_buffer(input, 0, output, 0, output.size());
-        self.fft_pipelines.encode_normalize(encoder, self.n, self.batch_size, output);
-        
+        self.fft_pipelines
+            .encode_normalize(encoder, self.n, self.batch_size, output);
+
         Ok(())
     }
 
@@ -429,14 +447,18 @@ async fn compute_fft(
     let input_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("fft_input"),
         size: buffer_size,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+        usage: wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::COPY_SRC
+            | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
 
     let output_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("fft_output"),
         size: buffer_size,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+        usage: wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::COPY_SRC
+            | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
 
@@ -528,10 +550,7 @@ fn main() -> Result<()> {
             )))
             // Stage 1: Multiply FFT(A) by FFT(B) (B_fft is side input)
             .pipe_custom(Box::new(MultiplyPipelineStage::with_side_input(
-                "multiply",
-                n,
-                batch_size,
-                "b_fft",
+                "multiply", n, batch_size, "b_fft",
             )))
             // Stage 2: Inverse FFT
             .pipe_custom(Box::new(FftPipelineStage::new(

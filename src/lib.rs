@@ -44,18 +44,18 @@ mod rocfft_wrapper;
 pub mod shaders;
 
 mod fft;
-mod pipelines;
 pub mod pipeline_builder;
+mod pipelines;
 
 pub use fft::{FftExecutor, FftUniforms, GpuFft, GpuFftTrait, SizeCache};
 pub use pipelines::{FftDirection, FftPipelines};
 
 // Re-export the simple pipeline interface for easy access
-pub use pipeline_builder::{
-    CloneBox, ComputeStage, FftStage, NormalizeStage, PingPongBuffers, PingPongState,
-    Pipeline, PipelineBuilder,
-};
 pub use pipeline_builder::params::PipelineParameters;
+pub use pipeline_builder::{
+    CloneBox, ComputeStage, FftStage, NormalizeStage, PingPongBuffers, PingPongState, Pipeline,
+    PipelineBuilder,
+};
 // FftDirection is already exported from pipelines
 
 // Integration with wgsl-ping-pong-pipeline

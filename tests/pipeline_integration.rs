@@ -9,13 +9,13 @@ use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
 #[cfg(feature = "ping_pong")]
-use wgsl_ping_pong_pipeline::wgpu_utils::ComputeContext;
-#[cfg(feature = "ping_pong")]
-use wgsl_ping_pong_pipeline::{Pipeline, StageConfig, PipelineStage};
-#[cfg(feature = "ping_pong")]
 use wgsl_fft::ping_pong_integration::{FftPipelineStage, MultiplyPipelineStage};
 #[cfg(feature = "ping_pong")]
 use wgsl_fft::{FftDirection, FftPipelines};
+#[cfg(feature = "ping_pong")]
+use wgsl_ping_pong_pipeline::wgpu_utils::ComputeContext;
+#[cfg(feature = "ping_pong")]
+use wgsl_ping_pong_pipeline::{Pipeline, PipelineStage, StageConfig};
 
 #[cfg(feature = "ping_pong")]
 /// CPU circular convolution for verification.
@@ -34,10 +34,7 @@ fn cpu_convolve_circular(a: &[f32], b: &[f32]) -> Vec<f32> {
 #[cfg(feature = "ping_pong")]
 /// Converts real signal to complex interleaved format (re, im, re, im, ...)
 fn real_to_complex(signal: &[f32]) -> Vec<f32> {
-    signal
-        .iter()
-        .flat_map(|&x| vec![x, 0.0])
-        .collect()
+    signal.iter().flat_map(|&x| vec![x, 0.0]).collect()
 }
 
 #[cfg(feature = "ping_pong")]
@@ -73,24 +70,28 @@ async fn test_fft_roundtrip_through_pipeline() -> anyhow::Result<()> {
 
     // Create dummy side input (all ones in complex format) on this device
     let dummy_input: Vec<f32> = (0..n).flat_map(|_| vec![1.0, 0.0]).collect();
-    let dummy_buffer = Arc::new(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Dummy Input Buffer"),
-        contents: bytemuck::cast_slice(&dummy_input),
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
-    }));
+    let dummy_buffer = Arc::new(
+        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Dummy Input Buffer"),
+            contents: bytemuck::cast_slice(&dummy_input),
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC
+                | wgpu::BufferUsages::COPY_DST,
+        }),
+    );
 
     // Build pipeline with shared context
     let mut pipeline = Pipeline::new()
         .with_context(Arc::clone(&context))
-        .pipe_config(StageConfig::Custom(
-            Box::new(FftPipelineStage::forward(n, 1))
-        ))
-        .pipe_config(StageConfig::Custom(
-            Box::new(MultiplyPipelineStage::new(n, 1))
-        ))
-        .pipe_config(StageConfig::Custom(
-            Box::new(FftPipelineStage::inverse(n, 1))
-        ))
+        .pipe_config(StageConfig::Custom(Box::new(FftPipelineStage::forward(
+            n, 1,
+        ))))
+        .pipe_config(StageConfig::Custom(Box::new(MultiplyPipelineStage::new(
+            n, 1,
+        ))))
+        .pipe_config(StageConfig::Custom(Box::new(FftPipelineStage::inverse(
+            n, 1,
+        ))))
         .build()
         .await?;
 
@@ -123,7 +124,10 @@ async fn test_fft_roundtrip_through_pipeline() -> anyhow::Result<()> {
 
     // Check that the first element is approximately 1.0
     let first_real = result_real[0];
-    println!("FFT -> Multiply -> IFFT result: first element = {}", first_real);
+    println!(
+        "FFT -> Multiply -> IFFT result: first element = {}",
+        first_real
+    );
     assert!(
         (first_real - 1.0).abs() < 0.5,
         "First element should be approximately 1.0: got {}, expected ~1.0",
@@ -143,7 +147,10 @@ async fn test_fft_roundtrip_through_pipeline() -> anyhow::Result<()> {
         );
     }
 
-    println!("✓ FFT roundtrip through pipeline passed! First element: {}", first_real);
+    println!(
+        "✓ FFT roundtrip through pipeline passed! First element: {}",
+        first_real
+    );
 
     Ok(())
 }
@@ -178,16 +185,22 @@ async fn test_fft_convolution_through_pipeline() -> anyhow::Result<()> {
 
     // Precompute FFT(B)
     let b_complex: Vec<f32> = real_to_complex(&signal_b);
-    let buf_b = Arc::new(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Signal B Buffer"),
-        contents: bytemuck::cast_slice(&b_complex),
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
-    }));
+    let buf_b = Arc::new(
+        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Signal B Buffer"),
+            contents: bytemuck::cast_slice(&b_complex),
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC
+                | wgpu::BufferUsages::COPY_DST,
+        }),
+    );
 
     let buf_fft_b = Arc::new(device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("FFT(B) Buffer"),
         size: (n * 2 * 4) as u64, // n * 2 floats (complex) * 4 bytes per float
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+        usage: wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::COPY_SRC
+            | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     }));
 
@@ -202,20 +215,23 @@ async fn test_fft_convolution_through_pipeline() -> anyhow::Result<()> {
         &buf_fft_b,
     );
     queue.submit(Some(encoder.finish()));
-    device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None })?;
+    device.poll(wgpu::PollType::Wait {
+        submission_index: None,
+        timeout: None,
+    })?;
 
     // Build pipeline: FFT(A) -> Multiply(FFT(A), FFT(B)) -> IFFT
     let mut pipeline = Pipeline::new()
         .with_context(Arc::clone(&context))
-        .pipe_config(StageConfig::Custom(
-            Box::new(FftPipelineStage::forward(n, 1))
-        ))
-        .pipe_config(StageConfig::Custom(
-            Box::new(MultiplyPipelineStage::new(n, 1))
-        ))
-        .pipe_config(StageConfig::Custom(
-            Box::new(FftPipelineStage::inverse(n, 1))
-        ))
+        .pipe_config(StageConfig::Custom(Box::new(FftPipelineStage::forward(
+            n, 1,
+        ))))
+        .pipe_config(StageConfig::Custom(Box::new(MultiplyPipelineStage::new(
+            n, 1,
+        ))))
+        .pipe_config(StageConfig::Custom(Box::new(FftPipelineStage::inverse(
+            n, 1,
+        ))))
         .build()
         .await?;
 
@@ -227,9 +243,9 @@ async fn test_fft_convolution_through_pipeline() -> anyhow::Result<()> {
 
     // Write input and process
     pipeline.write_input(&a_complex).await?;
-    pipeline.tick().await?;  // FFT(A)
-    pipeline.tick().await?;  // Multiply FFT(A) * FFT(B)
-    pipeline.tick().await?;  // IFFT
+    pipeline.tick().await?; // FFT(A)
+    pipeline.tick().await?; // Multiply FFT(A) * FFT(B)
+    pipeline.tick().await?; // IFFT
 
     let output = pipeline.read_output().await?;
 
@@ -305,24 +321,28 @@ async fn test_larger_fft_size() -> anyhow::Result<()> {
 
     // Create dummy side input
     let dummy_input: Vec<f32> = (0..n).flat_map(|_| vec![1.0, 0.0]).collect();
-    let dummy_buffer = Arc::new(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Dummy Input Buffer"),
-        contents: bytemuck::cast_slice(&dummy_input),
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
-    }));
+    let dummy_buffer = Arc::new(
+        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Dummy Input Buffer"),
+            contents: bytemuck::cast_slice(&dummy_input),
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC
+                | wgpu::BufferUsages::COPY_DST,
+        }),
+    );
 
     // Build and run pipeline with shared context
     let mut pipeline = Pipeline::new()
         .with_context(Arc::clone(&context))
-        .pipe_config(StageConfig::Custom(
-            Box::new(FftPipelineStage::forward(n, 1))
-        ))
-        .pipe_config(StageConfig::Custom(
-            Box::new(MultiplyPipelineStage::new(n, 1))
-        ))
-        .pipe_config(StageConfig::Custom(
-            Box::new(FftPipelineStage::inverse(n, 1))
-        ))
+        .pipe_config(StageConfig::Custom(Box::new(FftPipelineStage::forward(
+            n, 1,
+        ))))
+        .pipe_config(StageConfig::Custom(Box::new(MultiplyPipelineStage::new(
+            n, 1,
+        ))))
+        .pipe_config(StageConfig::Custom(Box::new(FftPipelineStage::inverse(
+            n, 1,
+        ))))
         .build()
         .await?;
 
