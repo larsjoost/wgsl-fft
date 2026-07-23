@@ -31,8 +31,8 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::Arc;
 
-use wgpu::CommandEncoder;
 use wgpu::util::DeviceExt;
+use wgpu::CommandEncoder;
 
 use wgsl_ping_pong_pipeline::pipeline::pipeline_stage::PipelineStage;
 use wgsl_ping_pong_pipeline::wgpu_utils::ComputeContext;
@@ -137,7 +137,7 @@ impl FftPipelineStage {
             actual_total_elements: None,
         }
     }
-    
+
     /// Sets the actual total elements for the current submission.
     /// This allows processing data that is smaller than the buffer size.
     pub fn set_actual_total_elements(&mut self, total_elements: usize) {
@@ -187,7 +187,7 @@ impl PipelineStage for FftPipelineStage {
 
         let element_size = 2 * std::mem::size_of::<f32>() as u64;
         let buffer_total_elements = (output.size() / element_size) as usize;
-        
+
         // Use actual total elements if set, otherwise fall back to buffer size
         let total_elements = self.actual_total_elements.unwrap_or(buffer_total_elements);
 
@@ -275,7 +275,7 @@ impl PipelineStage for FftPipelineStage {
         self.n = new_n;
         Ok(())
     }
-    
+
     fn update_actual_total_elements(&mut self, total_elements: usize) -> Result<()> {
         self.set_actual_total_elements(total_elements);
         Ok(())
@@ -421,10 +421,14 @@ impl PipelineStage for MultiplyPipelineStage {
         let element_size = 2 * std::mem::size_of::<f32>() as u64;
         let buffer_total_elements = (output.size() / element_size) as usize;
         let total_elements = self.actual_total_elements.unwrap_or(buffer_total_elements);
-        
+
         // Update the element count uniform buffer
         if let Some(ref element_count_uniform) = self.element_count_uniform {
-            queue.write_buffer(element_count_uniform, 0, bytemuck::cast_slice(&[total_elements as u32]));
+            queue.write_buffer(
+                element_count_uniform,
+                0,
+                bytemuck::cast_slice(&[total_elements as u32]),
+            );
         }
 
         // Create bind group with input, output, and element count uniform buffers
@@ -442,9 +446,13 @@ impl PipelineStage for MultiplyPipelineStage {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: self.element_count_uniform.as_ref().ok_or_else(|| {
-                        anyhow!("MultiplyPipelineStage element_count_uniform not initialized")
-                    })?.as_entire_binding(),
+                    resource: self
+                        .element_count_uniform
+                        .as_ref()
+                        .ok_or_else(|| {
+                            anyhow!("MultiplyPipelineStage element_count_uniform not initialized")
+                        })?
+                        .as_entire_binding(),
                 },
             ],
         });
@@ -577,7 +585,7 @@ impl PipelineStage for MultiplyPipelineStage {
         self.n = new_n;
         Ok(())
     }
-    
+
     fn update_actual_total_elements(&mut self, total_elements: usize) -> Result<()> {
         self.actual_total_elements = Some(total_elements);
         Ok(())

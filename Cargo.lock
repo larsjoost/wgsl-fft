@@ -1676,6 +1676,7 @@ dependencies = [
 [[package]]
 name = "wgsl-ping-pong-pipeline"
 version = "0.1.0"
+source = "git+https://github.com/larsjoost/wgsl-ping-pong-pipeline.git?branch=main#4c9d069613fe71a7a6b3895bb8f75a76c8c403ad"
 dependencies = [
  "anyhow",
  "bytemuck",

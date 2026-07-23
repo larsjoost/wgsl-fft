@@ -91,7 +91,7 @@ fn main() {
 
     // Batch processing
     let start = Instant::now();
-    let batch_results = fft.fft(&large_batch).expect("Batch FFT failed");
+    let _batch_results = fft.fft(&large_batch).expect("Batch FFT failed");
     let batch_time = start.elapsed();
 
     println!("  Individual processing time: {:?}", individual_time);
