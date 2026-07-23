@@ -32,6 +32,7 @@ use std::fmt::Debug;
 use std::sync::Arc;
 
 use wgpu::CommandEncoder;
+use wgpu::util::DeviceExt;
 
 use wgsl_ping_pong_pipeline::pipeline::pipeline_stage::PipelineStage;
 use wgsl_ping_pong_pipeline::wgpu_utils::ComputeContext;
@@ -65,6 +66,9 @@ pub struct FftPipelineStage {
     combined: bool,
     /// Lazily initialized FftPipelines (created during initialize())
     fft_pipelines: Option<FftPipelines>,
+    /// Actual total elements in the buffer for the current submission
+    /// This allows processing submissions smaller than the buffer size
+    actual_total_elements: Option<usize>,
 }
 
 impl FftPipelineStage {
@@ -80,6 +84,7 @@ impl FftPipelineStage {
             direction: FftDirection::Forward,
             combined: false,
             fft_pipelines: None,
+            actual_total_elements: None,
         }
     }
 
@@ -95,6 +100,7 @@ impl FftPipelineStage {
             direction: FftDirection::Inverse,
             combined: false,
             fft_pipelines: None,
+            actual_total_elements: None,
         }
     }
 
@@ -111,6 +117,7 @@ impl FftPipelineStage {
             direction: FftDirection::Forward,
             combined: true,
             fft_pipelines: None,
+            actual_total_elements: None,
         }
     }
 
@@ -127,19 +134,14 @@ impl FftPipelineStage {
             direction: FftDirection::Inverse,
             combined: true,
             fft_pipelines: None,
+            actual_total_elements: None,
         }
     }
-}
-
-impl Debug for FftPipelineStage {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("FftPipelineStage")
-            .field("n", &self.n)
-            .field("batch_size", &self.batch_size)
-            .field("direction", &self.direction)
-            .field("combined", &self.combined)
-            .field("fft_pipelines_initialized", &self.fft_pipelines.is_some())
-            .finish()
+    
+    /// Sets the actual total elements for the current submission.
+    /// This allows processing data that is smaller than the buffer size.
+    pub fn set_actual_total_elements(&mut self, total_elements: usize) {
+        self.actual_total_elements = Some(total_elements);
     }
 }
 
@@ -184,7 +186,10 @@ impl PipelineStage for FftPipelineStage {
             .expect("FftPipelineStage must be initialized before encode()");
 
         let element_size = 2 * std::mem::size_of::<f32>() as u64;
-        let total_elements = (output.size() / element_size) as usize;
+        let buffer_total_elements = (output.size() / element_size) as usize;
+        
+        // Use actual total elements if set, otherwise fall back to buffer size
+        let total_elements = self.actual_total_elements.unwrap_or(buffer_total_elements);
 
         if self.combined {
             // Combined mode: input is [A][B] concatenated, each of size n * batch_size
@@ -270,6 +275,23 @@ impl PipelineStage for FftPipelineStage {
         self.n = new_n;
         Ok(())
     }
+    
+    fn update_actual_total_elements(&mut self, total_elements: usize) -> Result<()> {
+        self.set_actual_total_elements(total_elements);
+        Ok(())
+    }
+}
+
+impl std::fmt::Debug for FftPipelineStage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FftPipelineStage")
+            .field("n", &self.n)
+            .field("batch_size", &self.batch_size)
+            .field("direction", &self.direction)
+            .field("combined", &self.combined)
+            .field("fft_pipelines_initialized", &self.fft_pipelines.is_some())
+            .finish()
+    }
 }
 
 /// A PipelineStage that performs element-wise complex multiplication.
@@ -302,12 +324,19 @@ impl PipelineStage for FftPipelineStage {
 pub struct MultiplyPipelineStage {
     n: usize,
     batch_size: u32,
+    /// The actual total elements in the buffer for the current submission
+    /// This allows processing submissions smaller than the buffer size
+    actual_total_elements: Option<usize>,
     /// The compiled compute pipeline for complex multiplication
     compute_pipeline: Option<wgpu::ComputePipeline>,
     /// The bind group layout
     bind_group_layout: Option<wgpu::BindGroupLayout>,
     /// The device for creating bind groups
     device: Option<wgpu::Device>,
+    /// The queue for GPU operations
+    queue: Option<wgpu::Queue>,
+    /// Buffer to store the actual element count as a uniform
+    element_count_uniform: Option<wgpu::Buffer>,
 }
 
 impl MultiplyPipelineStage {
@@ -322,9 +351,12 @@ impl MultiplyPipelineStage {
         Self {
             n,
             batch_size,
+            actual_total_elements: None,
             compute_pipeline: None,
             bind_group_layout: None,
             device: None,
+            queue: None,
+            element_count_uniform: None,
         }
     }
 }
@@ -376,13 +408,26 @@ impl PipelineStage for MultiplyPipelineStage {
         let device = self.device.as_ref().ok_or_else(|| {
             anyhow!("MultiplyPipelineStage device must be initialized before encode()")
         })?;
+        let queue = self.queue.as_ref().ok_or_else(|| {
+            anyhow!("MultiplyPipelineStage queue must be initialized before encode()")
+        })?;
 
         // In the new architecture, input contains [A_freq][B_freq] concatenated
         // We need to split it: first half is A_freq, second half is B_freq
         // Then multiply A_freq[i] * B_freq[i] to get output[i]
         // The output has size n * batch_size (same as each half)
 
-        // Create bind group with input and output buffers
+        // Determine the element count to use
+        let element_size = 2 * std::mem::size_of::<f32>() as u64;
+        let buffer_total_elements = (output.size() / element_size) as usize;
+        let total_elements = self.actual_total_elements.unwrap_or(buffer_total_elements);
+        
+        // Update the element count uniform buffer
+        if let Some(ref element_count_uniform) = self.element_count_uniform {
+            queue.write_buffer(element_count_uniform, 0, bytemuck::cast_slice(&[total_elements as u32]));
+        }
+
+        // Create bind group with input, output, and element count uniform buffers
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("MultiplyPipelineStage Bind Group"),
             layout: bgl,
@@ -395,6 +440,12 @@ impl PipelineStage for MultiplyPipelineStage {
                     binding: 1,
                     resource: output.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.element_count_uniform.as_ref().ok_or_else(|| {
+                        anyhow!("MultiplyPipelineStage element_count_uniform not initialized")
+                    })?.as_entire_binding(),
+                },
             ],
         });
 
@@ -406,11 +457,9 @@ impl PipelineStage for MultiplyPipelineStage {
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, &bind_group, &[]);
 
-        // Dispatch based on actual output buffer size to handle resized buffers
-        let element_size = 2 * std::mem::size_of::<f32>() as u64;
-        let total_elements = (output.size() / element_size) as u32;
+        // Dispatch based on actual elements if set, otherwise use output buffer size
         let workgroup_size = 256u32;
-        let dispatch_count = (total_elements + workgroup_size - 1) / workgroup_size;
+        let dispatch_count = (total_elements as u32 + workgroup_size - 1) / workgroup_size;
         pass.dispatch_workgroups(dispatch_count, 1, 1);
 
         Ok(())
@@ -418,8 +467,9 @@ impl PipelineStage for MultiplyPipelineStage {
 
     fn initialize(&mut self, context: &ComputeContext) -> Result<()> {
         let device = &context.device;
+        let queue = &context.queue;
 
-        // Create bind group layout with 2 bindings (input contains [A_freq][B_freq])
+        // Create bind group layout with 3 bindings (input, output, element_count uniform)
         let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("MultiplyPipelineStage Bind Group Layout"),
             entries: &[
@@ -443,7 +493,24 @@ impl PipelineStage for MultiplyPipelineStage {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
+        });
+
+        // Create element count uniform buffer
+        let element_count_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("MultiplyPipelineStage element_count uniform"),
+            contents: bytemuck::cast_slice(&[0u32]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
         // Create the compute pipeline with the complex multiplication shader
@@ -471,6 +538,8 @@ impl PipelineStage for MultiplyPipelineStage {
         self.compute_pipeline = Some(compute_pipeline);
         self.bind_group_layout = Some(bgl);
         self.device = Some(device.clone());
+        self.queue = Some(queue.clone());
+        self.element_count_uniform = Some(element_count_uniform);
 
         Ok(())
     }
@@ -508,11 +577,16 @@ impl PipelineStage for MultiplyPipelineStage {
         self.n = new_n;
         Ok(())
     }
+    
+    fn update_actual_total_elements(&mut self, total_elements: usize) -> Result<()> {
+        self.actual_total_elements = Some(total_elements);
+        Ok(())
+    }
 }
 
 /// WGSL shader for complex multiplication with combined input.
 /// Input is [A_freq][B_freq] concatenated.
-/// Splits at arrayLength/2, then multiplies A_freq[i] * B_freq[i].
+/// Splits at element_count/2, then multiplies A_freq[i] * B_freq[i].
 /// Output is [products][zeros] to maintain the same size as input.
 ///
 /// Each complex number is stored as vec2<f32> where:
@@ -528,6 +602,9 @@ var<storage, read> input_data: array<vec2<f32>>;
 @group(0) @binding(1)
 var<storage, read_write> output: array<vec2<f32>>;
 
+@group(0) @binding(2)
+var<uniform> element_count: u32;
+
 fn cmul(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
     return vec2<f32>(
         a.x * b.x - a.y * b.y,
@@ -538,20 +615,23 @@ fn cmul(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
 @compute @workgroup_size(256, 1, 1)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
-    if (idx >= arrayLength(&output)) { return; }
     
-    let input_len = arrayLength(&input_data);
-    let half_len = input_len / 2u;
+    let half_len = element_count / 2u;
     
     // Input contains [A_freq][B_freq] concatenated
     // First half is A_freq, second half is B_freq
     // Output is [products][zeros] to maintain the same size
-    if (idx < half_len) {
-        let a_freq = input_data[idx];
-        let b_freq = input_data[idx + half_len];
-        output[idx] = cmul(a_freq, b_freq);
+    if (idx < element_count) {
+        if (idx < half_len) {
+            let a_freq = input_data[idx];
+            let b_freq = input_data[idx + half_len];
+            output[idx] = cmul(a_freq, b_freq);
+        } else {
+            // Fill the second half with zeros
+            output[idx] = vec2<f32>(0.0, 0.0);
+        }
     } else {
-        // Fill the second half with zeros
+        // Clear the portion beyond element_count to avoid stale data
         output[idx] = vec2<f32>(0.0, 0.0);
     }
 }
