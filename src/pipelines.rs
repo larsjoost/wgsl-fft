@@ -4,7 +4,7 @@
 //! [`FftPipelines::queue`] to share them with the rest of your pipeline so all GPU
 //! resources live on a single device.
 
-use std::cell::RefCell;
+use std::sync::Mutex;
 
 use wgpu::util::DeviceExt;
 use wgpu::{
@@ -127,11 +127,11 @@ pub struct FftPipelines {
     pipeline_normalize: ComputePipeline,
     bgl: BindGroupLayout,
     bgl_norm: BindGroupLayout,
-    scratch: RefCell<std::collections::HashMap<usize, wgpu::Buffer>>,
+    scratch: Mutex<std::collections::HashMap<usize, wgpu::Buffer>>,
     // Keyed by (n, direction_as_u32, input_ptr, output_ptr)
-    call_cache: RefCell<std::collections::HashMap<(usize, u32, usize, usize), FftCallCache>>,
+    call_cache: Mutex<std::collections::HashMap<(usize, u32, usize, usize), FftCallCache>>,
     // Keyed by (n, buf_ptr)
-    norm_cache: RefCell<std::collections::HashMap<(usize, usize), FftNormCache>>,
+    norm_cache: Mutex<std::collections::HashMap<(usize, usize), FftNormCache>>,
 }
 
 impl FftPipelines {
@@ -208,9 +208,9 @@ impl FftPipelines {
             pipeline_normalize,
             bgl,
             bgl_norm,
-            scratch: RefCell::new(std::collections::HashMap::new()),
-            call_cache: RefCell::new(std::collections::HashMap::new()),
-            norm_cache: RefCell::new(std::collections::HashMap::new()),
+            scratch: Mutex::new(std::collections::HashMap::new()),
+            call_cache: Mutex::new(std::collections::HashMap::new()),
+            norm_cache: Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -243,7 +243,7 @@ impl FftPipelines {
         // Ensure scratch buffer exists for this n and batch_size
         {
             let byte_size = (n * 8 * batch_size as usize) as u64;
-            let mut map = self.scratch.borrow_mut();
+            let mut map = self.scratch.lock().unwrap();
             let buf = map.entry(n).or_insert_with(|| {
                 self.device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("fft_scratch"),
@@ -275,9 +275,9 @@ impl FftPipelines {
 
         // Build and cache on first call for this key
         {
-            let scratch_guard = self.scratch.borrow();
+            let scratch_guard = self.scratch.lock().unwrap();
             let scratch_buf = scratch_guard.get(&n).unwrap();
-            let mut cache = self.call_cache.borrow_mut();
+            let mut cache = self.call_cache.lock().unwrap();
             if !cache.contains_key(&key) {
                 let entry = Self::build_fft_cache(
                     &self.device,
@@ -293,7 +293,7 @@ impl FftPipelines {
         }
 
         // Encode using cached bind groups — zero allocations
-        let cache_guard = self.call_cache.borrow();
+        let cache_guard = self.call_cache.lock().unwrap();
         let cached = cache_guard.get(&key).unwrap();
 
         {
@@ -411,7 +411,7 @@ impl FftPipelines {
     ) {
         let key = (n, buf as *const _ as usize);
         {
-            let mut cache = self.norm_cache.borrow_mut();
+            let mut cache = self.norm_cache.lock().unwrap();
             if !cache.contains_key(&key) {
                 let params = self
                     .device
@@ -443,7 +443,7 @@ impl FftPipelines {
                 );
             }
         }
-        let cache_guard = self.norm_cache.borrow();
+        let cache_guard = self.norm_cache.lock().unwrap();
         let cached = cache_guard.get(&key).unwrap();
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {

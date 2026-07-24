@@ -7,7 +7,7 @@
 //! Also implements **Bluestein's algorithm** for arbitrary FFT sizes (not just powers of 2).
 
 use std::any::Any;
-use std::cell::RefCell;
+use std::sync::Mutex;
 use std::num::NonZeroU64;
 
 use num_complex::Complex;
@@ -97,13 +97,13 @@ pub struct GpuFft {
     pub pipeline: wgpu::ComputePipeline,
     /// Present only when created via `new()` (R4 mode). `None` in legacy `with_shader` mode.
     pub pipeline_r2: Option<wgpu::ComputePipeline>,
-    pub cache: RefCell<std::collections::HashMap<usize, SizeCache>>,
+    pub cache: Mutex<std::collections::HashMap<usize, SizeCache>>,
     /// Bluestein algorithm pipelines for GPU-accelerated arbitrary size FFT
     pub pipeline_bluestein_chirp: wgpu::ComputePipeline,
     pub pipeline_bluestein_inv_chirp: wgpu::ComputePipeline,
     pub pipeline_bluestein_zero_pad: wgpu::ComputePipeline,
     /// Cache for precomputed Bluestein chirp FFTs: (n, is_inverse) -> B_fft
-    pub bluestein_cache: RefCell<std::collections::HashMap<(usize, bool), Vec<Complex<f32>>>>,
+    pub bluestein_cache: Mutex<std::collections::HashMap<(usize, bool), Vec<Complex<f32>>>>,
 }
 
 impl FftExecutor for GpuFft {
@@ -260,11 +260,11 @@ impl GpuFft {
             queue,
             pipeline,
             pipeline_r2,
-            cache: RefCell::new(std::collections::HashMap::new()),
+            cache: Mutex::new(std::collections::HashMap::new()),
             pipeline_bluestein_chirp,
             pipeline_bluestein_inv_chirp,
             pipeline_bluestein_zero_pad,
-            bluestein_cache: RefCell::new(std::collections::HashMap::new()),
+            bluestein_cache: Mutex::new(std::collections::HashMap::new()),
         })
     }
 
@@ -349,11 +349,11 @@ impl GpuFft {
             queue,
             pipeline,
             pipeline_r2: None, // legacy single-pipeline mode
-            cache: RefCell::new(std::collections::HashMap::new()),
+            cache: Mutex::new(std::collections::HashMap::new()),
             pipeline_bluestein_chirp,
             pipeline_bluestein_inv_chirp,
             pipeline_bluestein_zero_pad,
-            bluestein_cache: RefCell::new(std::collections::HashMap::new()),
+            bluestein_cache: Mutex::new(std::collections::HashMap::new()),
         })
     }
 
@@ -656,7 +656,7 @@ impl GpuFft {
 
         // 1. Get or compute B_fft = FFT(b_pad)
         let b_fft = {
-            let mut cache = self.bluestein_cache.borrow_mut();
+            let mut cache = self.bluestein_cache.lock().unwrap();
             if let Some(cached) = cache.get(&(n, inverse)) {
                 cached.clone()
             } else {
@@ -864,7 +864,7 @@ impl GpuFft {
 
     /// Get or build size-specific GPU resources.
     pub fn get_or_build_size_cache(&self, n: usize, log_n: u32) -> SizeCache {
-        let mut cache = self.cache.borrow_mut();
+        let mut cache = self.cache.lock().unwrap();
         if let Some(sc) = cache.get(&n) {
             return sc.clone();
         }
