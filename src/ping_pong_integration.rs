@@ -27,6 +27,7 @@
 //!     .await?;
 //! ```
 
+
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -40,6 +41,7 @@ use wgsl_ping_pong_pipeline::wgpu_utils::ComputeContext;
 use anyhow::{anyhow, Result};
 
 use crate::{FftDirection, FftPipelines};
+
 
 /// A PipelineStage that performs FFT or IFFT operations using wgsl-fft's FftPipelines.
 ///
@@ -297,14 +299,15 @@ impl std::fmt::Debug for FftPipelineStage {
 /// A PipelineStage that performs element-wise complex multiplication.
 ///
 /// This stage multiplies two complex buffers element-wise: `output[i] = input_a[i] * input_b[i]`
-/// In the new unified architecture, the input is [A_freq][B_freq] concatenated, and the stage
-/// splits at n * batch_size, then multiplies A_freq[i] * B_freq[i] for each i.
+/// Input is interleaved pairs [A0, B0, A1, B1, ...] where each pair at [2*i, 2*i+1] contains
+/// (A_freq[i], B_freq[i]), and the stage multiplies each pair.
 ///
 /// # Bind Group Layout
 ///
-/// This stage uses a custom bind group layout with 2 bindings:
-/// - Binding 0: input (storage, read-only) - contains [A_freq][B_freq]
-/// - Binding 1: output (storage, read-write)
+/// This stage uses a custom bind group layout with 3 bindings:
+/// - Binding 0: input (storage, read-only) - contains interleaved pairs [A0, B0, A1, B1, ...]
+/// - Binding 1: output (storage, read-write) - contains products [A0*B0, A1*B1, ...]
+/// - Binding 2: element_count uniform buffer
 ///
 /// # Usage
 ///
@@ -314,7 +317,7 @@ impl std::fmt::Debug for FftPipelineStage {
 /// use wgsl_fft::ping_pong_integration::MultiplyPipelineStage;
 ///
 /// // Create a multiply stage with n=1024, batch_size=1
-/// // The input should be a buffer containing [A_freq][B_freq]
+/// // The input should be a buffer containing interleaved pairs [A0, B0, A1, B1, ...]
 /// let multiply_stage = MultiplyPipelineStage::new(1024, 1);
 /// let pipeline = Pipeline::new()
 ///     .pipe_config(StageConfig::Custom(Box::new(multiply_stage)))
@@ -341,8 +344,7 @@ pub struct MultiplyPipelineStage {
 
 impl MultiplyPipelineStage {
     /// Creates a new complex multiplication stage.
-    /// In the new unified architecture, input is [A_freq][B_freq] concatenated
-    /// and output is [products][zeros].
+    /// Input is interleaved pairs [A0, B0, A1, B1, ...] and output is [A0*B0, A1*B1, ...].
     ///
     /// # Arguments
     /// * `n` - Number of complex elements
@@ -385,8 +387,8 @@ impl PipelineStage for MultiplyPipelineStage {
     }
 
     fn batch_size(&self) -> usize {
-        // In the new unified architecture, Multiply receives [A_freq][B_freq] (2 * n * batch_size)
-        // and outputs [products][zeros] (2 * n * batch_size)
+        // Input is interleaved pairs [A0, B0, A1, B1, ...] with size 2 * n * batch_size
+        // Output is [A0*B0, A1*B1, ..., zeros] with same size to maintain pipeline compatibility
         2 * self.n * self.batch_size as usize
     }
 
@@ -412,10 +414,10 @@ impl PipelineStage for MultiplyPipelineStage {
             anyhow!("MultiplyPipelineStage queue must be initialized before encode()")
         })?;
 
-        // In the new architecture, input contains [A_freq][B_freq] concatenated
-        // We need to split it: first half is A_freq, second half is B_freq
-        // Then multiply A_freq[i] * B_freq[i] to get output[i]
-        // The output has size n * batch_size (same as each half)
+        // Input contains interleaved pairs [A0, B0, A1, B1, ...]
+        // Each pair at [2*i, 2*i+1] contains (A_freq[i], B_freq[i])
+        // Multiply each pair to get output[i]
+        // The output has size n * batch_size
 
         // Determine the element count to use
         let element_size = 2 * std::mem::size_of::<f32>() as u64;
@@ -465,9 +467,12 @@ impl PipelineStage for MultiplyPipelineStage {
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, &bind_group, &[]);
 
-        // Dispatch based on actual elements if set, otherwise use output buffer size
+        // Dispatch based on total elements (input size)
+        // Shader processes pairs: for each pair_idx, it reads [pair_idx*2, pair_idx*2+1]
+        // We need to dispatch enough workgroups to cover all pair indices up to element_count/2
         let workgroup_size = 256u32;
-        let dispatch_count = (total_elements as u32 + workgroup_size - 1) / workgroup_size;
+        let pair_count = total_elements / 2;
+        let dispatch_count = (pair_count as u32 + workgroup_size - 1) / workgroup_size;
         pass.dispatch_workgroups(dispatch_count, 1, 1);
 
         Ok(())
@@ -522,7 +527,7 @@ impl PipelineStage for MultiplyPipelineStage {
         });
 
         // Create the compute pipeline with the complex multiplication shader
-        // The shader now handles the split internally
+        // The shader processes interleaved pairs [A0, B0, A1, B1, ...]
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Complex Multiply Shader"),
             source: wgpu::ShaderSource::Wgsl(COMPLEX_MULTIPLY_COMBINED_WGSL.into()),
@@ -567,7 +572,7 @@ impl PipelineStage for MultiplyPipelineStage {
         }
 
         // Update our cached values
-        // In the new architecture, total_elements = 2 * n * batch_size
+        // total_elements = 2 * n * batch_size (input size with interleaved pairs)
         let total_elements = new_batch_size;
         if total_elements % (2 * self.n) != 0 {
             anyhow::bail!(
@@ -592,10 +597,10 @@ impl PipelineStage for MultiplyPipelineStage {
     }
 }
 
-/// WGSL shader for complex multiplication with combined input.
-/// Input is [A_freq][B_freq] concatenated.
-/// Splits at element_count/2, then multiplies A_freq[i] * B_freq[i].
-/// Output is [products][zeros] to maintain the same size as input.
+/// WGSL shader for complex multiplication with interleaved pair input.
+/// Input is interleaved pairs [A0, B0, A1, B1, ...].
+/// Each pair at positions [2*i, 2*i+1] contains (A_freq[i], B_freq[i]).
+/// Output is [A0*B0, A1*B1, ..., zeros] to maintain the same size as input.
 ///
 /// Each complex number is stored as vec2<f32> where:
 /// - .x = real part
@@ -622,25 +627,17 @@ fn cmul(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
 
 @compute @workgroup_size(256, 1, 1)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let idx = gid.x;
+    let pair_idx = gid.x;
+    let a_idx = pair_idx * 2u;
+    let b_idx = a_idx + 1u;
     
-    let half_len = element_count / 2u;
-    
-    // Input contains [A_freq][B_freq] concatenated
-    // First half is A_freq, second half is B_freq
-    // Output is [products][zeros] to maintain the same size
-    if (idx < element_count) {
-        if (idx < half_len) {
-            let a_freq = input_data[idx];
-            let b_freq = input_data[idx + half_len];
-            output[idx] = cmul(a_freq, b_freq);
-        } else {
-            // Fill the second half with zeros
-            output[idx] = vec2<f32>(0.0, 0.0);
-        }
-    } else {
-        // Clear the portion beyond element_count to avoid stale data
-        output[idx] = vec2<f32>(0.0, 0.0);
+    if (b_idx < element_count) {
+        let a_freq = input_data[a_idx];
+        let b_freq = input_data[b_idx];
+        output[pair_idx] = cmul(a_freq, b_freq);
+    } else if (pair_idx < element_count) {
+        // Fill remaining with zeros
+        output[pair_idx] = vec2<f32>(0.0, 0.0);
     }
 }
 "#;
@@ -698,8 +695,245 @@ mod tests {
         let stage = MultiplyPipelineStage::new(1024, 1);
         assert_eq!(stage.name(), "multiply_complex");
         assert_eq!(stage.vector_dim(), 2);
-        // In new unified architecture, Multiply receives [A_freq][B_freq] concatenated
-        // so batch_size is 2 * n * batch_size
+        // Input is interleaved pairs [A0, B0, A1, B1, ...] with size 2 * n * batch_size
         assert_eq!(stage.batch_size(), 2 * 1024 * 1);
     }
 }
+
+/// A PipelineStage that interleaves concatenated [A][B] input to [A0, B0, A1, B1, ...] format.
+///
+/// This stage converts from concatenated format (used by FFT combined mode)
+/// to interleaved format (used by Multiply stage).
+pub struct InterleavePipelineStage {
+    n: usize,
+    batch_size: u32,
+    compute_pipeline: Option<wgpu::ComputePipeline>,
+    bind_group_layout: Option<wgpu::BindGroupLayout>,
+    device: Option<wgpu::Device>,
+    queue: Option<wgpu::Queue>,
+    element_count_uniform: Option<wgpu::Buffer>,
+}
+
+impl InterleavePipelineStage {
+    pub fn new(n: usize, batch_size: u32) -> Self {
+        Self {
+            n,
+            batch_size,
+            compute_pipeline: None,
+            bind_group_layout: None,
+            device: None,
+            queue: None,
+            element_count_uniform: None,
+        }
+    }
+}
+
+impl PipelineStage for InterleavePipelineStage {
+    fn name(&self) -> &str {
+        "interleave"
+    }
+
+    fn vector_dim(&self) -> usize {
+        2
+    }
+
+    fn batch_size(&self) -> usize {
+        2 * self.n * self.batch_size as usize
+    }
+
+    fn encode(
+        &self,
+        encoder: &mut CommandEncoder,
+        input: &wgpu::Buffer,
+        output: &wgpu::Buffer,
+        _side_inputs: &HashMap<String, Arc<wgpu::Buffer>>,
+    ) -> Result<()> {
+        let pipeline = self.compute_pipeline.as_ref().ok_or_else(|| anyhow!("InterleavePipelineStage not initialized"))?;
+        let bgl = self.bind_group_layout.as_ref().ok_or_else(|| anyhow!("InterleavePipelineStage bind group layout not initialized"))?;
+        let device = self.device.as_ref().ok_or_else(|| anyhow!("InterleavePipelineStage device not initialized"))?;
+        let queue = self.queue.as_ref().ok_or_else(|| anyhow!("InterleavePipelineStage queue not initialized"))?;
+
+        let element_size = 2 * std::mem::size_of::<f32>() as u64;
+        let total_elements = (output.size() / element_size) as usize;
+
+        if let Some(ref element_count_uniform) = self.element_count_uniform {
+            queue.write_buffer(
+                element_count_uniform,
+                0,
+                bytemuck::cast_slice(&[total_elements as u32]),
+            );
+        }
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Interleave Bind Group"),
+            layout: bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: input.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: output.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.element_count_uniform.as_ref().ok_or_else(|| anyhow!("element_count_uniform not initialized"))?.as_entire_binding(),
+                },
+            ],
+        });
+
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("Interleave Pass"),
+            timestamp_writes: None,
+        });
+
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, &bind_group, &[]);
+
+        let workgroup_size = 256u32;
+        let half_len = total_elements / 2;
+        let dispatch_count = (half_len as u32 + workgroup_size - 1) / workgroup_size;
+        pass.dispatch_workgroups(dispatch_count, 1, 1);
+
+        Ok(())
+    }
+
+    fn initialize(&mut self, context: &ComputeContext) -> Result<()> {
+        let device = &context.device;
+        let queue = &context.queue;
+
+        let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Interleave Bind Group Layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+
+        let element_count_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Interleave element_count uniform"),
+            contents: bytemuck::cast_slice(&[0u32]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Interleave Shader"),
+            source: wgpu::ShaderSource::Wgsl(INTERLEAVE_WGSL.into()),
+        });
+
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Interleave Pipeline Layout"),
+            bind_group_layouts: &[Some(&bgl)],
+            immediate_size: 0,
+        });
+
+        let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("Interleave Pipeline"),
+            layout: Some(&pipeline_layout),
+            module: &shader,
+            entry_point: Some("main"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+
+        self.compute_pipeline = Some(compute_pipeline);
+        self.bind_group_layout = Some(bgl);
+        self.device = Some(device.clone());
+        self.queue = Some(queue.clone());
+        self.element_count_uniform = Some(element_count_uniform);
+
+        Ok(())
+    }
+
+    fn requires_initialization(&self) -> bool {
+        true
+    }
+
+    fn supports_dynamic_resizing(&self) -> bool {
+        true
+    }
+
+    fn resize(&mut self, new_batch_size: usize, new_vector_dim: usize) -> Result<()> {
+        if new_vector_dim != 2 {
+            anyhow::bail!("InterleavePipelineStage requires vector_dim of 2");
+        }
+        let total_elements = new_batch_size;
+        if total_elements % (2 * self.n) != 0 {
+            anyhow::bail!("New batch size {} is not a multiple of 2 * n {}", total_elements, self.n);
+        }
+        self.batch_size = (total_elements / (2 * self.n)) as u32;
+        Ok(())
+    }
+
+    fn update_n(&mut self, new_n: usize) -> Result<()> {
+        self.n = new_n;
+        Ok(())
+    }
+
+    fn update_actual_total_elements(&mut self, _total_elements: usize) -> Result<()> {
+        Ok(())
+    }
+}
+
+impl Debug for InterleavePipelineStage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InterleavePipelineStage")
+            .field("n", &self.n)
+            .field("batch_size", &self.batch_size)
+            .field("initialized", &self.compute_pipeline.is_some())
+            .finish()
+    }
+}
+
+/// WGSL shader for interleaving concatenated [A][B] to [A0, B0, A1, B1, ...]
+const INTERLEAVE_WGSL: &str = r#"
+@group(0) @binding(0)
+var<storage, read> input_data: array<vec2<f32>>;
+
+@group(0) @binding(1)
+var<storage, read_write> output: array<vec2<f32>>;
+
+@group(0) @binding(2)
+var<uniform> element_count: u32;
+
+@compute @workgroup_size(256, 1, 1)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let pair_idx = gid.x;
+    let a_idx = pair_idx;
+    let b_idx = pair_idx + element_count / 2u;
+    
+    if (b_idx < element_count) {
+        output[pair_idx * 2u] = input_data[a_idx];
+        output[pair_idx * 2u + 1u] = input_data[b_idx];
+    }
+}
+"#;

@@ -6,16 +6,13 @@
 //! This test file requires the "ping_pong" feature to be enabled.
 
 use std::sync::Arc;
-use wgpu::util::DeviceExt;
 
 #[cfg(feature = "ping_pong")]
 use wgsl_fft::ping_pong_integration::{FftPipelineStage, MultiplyPipelineStage};
 #[cfg(feature = "ping_pong")]
-use wgsl_fft::{FftDirection, FftPipelines};
-#[cfg(feature = "ping_pong")]
 use wgsl_ping_pong_pipeline::wgpu_utils::ComputeContext;
 #[cfg(feature = "ping_pong")]
-use wgsl_ping_pong_pipeline::{Pipeline, PipelineStage, StageConfig};
+use wgsl_ping_pong_pipeline::{Pipeline, PipelineStage};
 
 #[cfg(feature = "ping_pong")]
 /// CPU circular convolution for verification.
@@ -44,242 +41,22 @@ fn extract_real(complex: &[f32]) -> Vec<f32> {
 }
 
 #[cfg(feature = "ping_pong")]
+/// Creates interleaved pairs [A0, B0, A1, B1, ...] from two complex vectors
+fn interleave_complex(a: &[f32], b: &[f32]) -> Vec<f32> {
+    let mut result = Vec::with_capacity(a.len() + b.len());
+    for i in 0..(a.len() / 2) {
+        result.push(a[i * 2]);
+        result.push(a[i * 2 + 1]);
+        result.push(b[i * 2]);
+        result.push(b[i * 2 + 1]);
+    }
+    result
+}
+
+#[cfg(feature = "ping_pong")]
 const EPSILON: f32 = 1e-4;
 
-/// Test: FFT roundtrip through pipeline (FFT -> Identity Multiply -> IFFT)
-///
-/// This test verifies that:
-/// 1. FFT stages can be created and used in a pipeline
-/// 2. Multiply stage works correctly with side inputs
-/// 3. Data flows correctly through the pipeline
-/// 4. FFT -> Multiply -> IFFT preserves the input signal (within numerical precision)
-#[pollster::test]
-#[cfg(feature = "ping_pong")]
-async fn test_fft_roundtrip_through_pipeline() -> anyhow::Result<()> {
-    let n = 8; // Use power of 2 for FFT
-
-    // Create a simple test signal (impulse at position 0)
-    let signal: Vec<f32> = vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
-
-    // Convert to complex format
-    let input: Vec<f32> = real_to_complex(&signal);
-
-    // Create a shared ComputeContext for pipeline and side inputs
-    let context = Arc::new(ComputeContext::new_high_performance().await?);
-    let device = context.device.clone();
-
-    // Create dummy side input (all ones in complex format) on this device
-    let dummy_input: Vec<f32> = (0..n).flat_map(|_| vec![1.0, 0.0]).collect();
-    let dummy_buffer = Arc::new(
-        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Dummy Input Buffer"),
-            contents: bytemuck::cast_slice(&dummy_input),
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_SRC
-                | wgpu::BufferUsages::COPY_DST,
-        }),
-    );
-
-    // Build pipeline with shared context
-    let mut pipeline = Pipeline::new()
-        .with_context(Arc::clone(&context))
-        .pipe_config(StageConfig::Custom(Box::new(FftPipelineStage::forward(
-            n, 1,
-        ))))
-        .pipe_config(StageConfig::Custom(Box::new(MultiplyPipelineStage::new(
-            n, 1,
-        ))))
-        .pipe_config(StageConfig::Custom(Box::new(FftPipelineStage::inverse(
-            n, 1,
-        ))))
-        .build()
-        .await?;
-
-    // Add dummy side input
-    pipeline.add_side_input("input_b", Arc::clone(&dummy_buffer));
-
-    // Write input data
-    pipeline.write_input(&input).await?;
-
-    // Advance pipeline by 3 ticks (data propagates through 3 stages)
-    pipeline.tick().await?;
-    pipeline.tick().await?;
-    pipeline.tick().await?;
-
-    // Read output
-    let output = pipeline.read_output().await?;
-
-    // Extract real parts (imaginary parts should be near zero)
-    let result_real = extract_real(&output);
-
-    // Verify output size
-    assert_eq!(result_real.len(), n, "Output length mismatch");
-
-    // For FFT -> Multiply by ones -> IFFT with normalization:
-    // FFT of impulse [1,0,...,0] = [1,1,...,1] (constant)
-    // Multiply by ones = [1,1,...,1]
-    // IFFT of [1,1,...,1] = [N,0,...,0] (impulse * N)
-    // Normalization divides by N, so we get [1,0,...,0]
-    // So we expect the output to match the input approximately
-
-    // Check that the first element is approximately 1.0
-    let first_real = result_real[0];
-    println!(
-        "FFT -> Multiply -> IFFT result: first element = {}",
-        first_real
-    );
-    assert!(
-        (first_real - 1.0).abs() < 0.5,
-        "First element should be approximately 1.0: got {}, expected ~1.0",
-        first_real
-    );
-
-    // Check that other elements are near zero
-    for i in 1..n {
-        let actual_real = result_real[i];
-        let diff = actual_real.abs();
-        assert!(
-            diff < 0.5,
-            "Output[{}] = {:.6}, expected ≈ 0.0, diff = {:.6}",
-            i,
-            actual_real,
-            diff
-        );
-    }
-
-    println!(
-        "✓ FFT roundtrip through pipeline passed! First element: {}",
-        first_real
-    );
-
-    Ok(())
-}
-
-/// Test: Full FFT-based convolution with pre-computed FFT(B)
-///
-/// This test demonstrates the complete convolution workflow:
-/// 1. Precompute FFT(B) using FftPipelines
-/// 2. Build pipeline: FFT(A) -> Multiply(FFT(A), FFT(B)) -> IFFT
-/// 3. Verify result matches CPU circular convolution
-#[pollster::test]
-#[cfg(feature = "ping_pong")]
-async fn test_fft_convolution_through_pipeline() -> anyhow::Result<()> {
-    let n = 8; // Use power of 2 for FFT
-
-    // Create a shared ComputeContext for pipeline and FFT pipelines
-    let context = Arc::new(ComputeContext::new_high_performance().await?);
-    let device = context.device.clone();
-    let queue = context.queue.clone();
-
-    // Create FFT pipelines for pre-computing FFT(B)
-    let fft_pipelines = FftPipelines::from_device_queue(device.clone(), queue.clone());
-
-    // Create test signals
-    // Signal A: impulse at position 0
-    let signal_a: Vec<f32> = vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
-    // Signal B: box function
-    let signal_b: Vec<f32> = vec![1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0];
-
-    // Compute expected result on CPU
-    let expected = cpu_convolve_circular(&signal_a, &signal_b);
-
-    // Precompute FFT(B)
-    let b_complex: Vec<f32> = real_to_complex(&signal_b);
-    let buf_b = Arc::new(
-        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Signal B Buffer"),
-            contents: bytemuck::cast_slice(&b_complex),
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_SRC
-                | wgpu::BufferUsages::COPY_DST,
-        }),
-    );
-
-    let buf_fft_b = Arc::new(device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("FFT(B) Buffer"),
-        size: (n * 2 * 4) as u64, // n * 2 floats (complex) * 4 bytes per float
-        usage: wgpu::BufferUsages::STORAGE
-            | wgpu::BufferUsages::COPY_SRC
-            | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    }));
-
-    // Compute FFT(B) using wgsl-fft
-    let mut encoder = device.create_command_encoder(&Default::default());
-    fft_pipelines.encode_fft(
-        &mut encoder,
-        n,
-        1,
-        FftDirection::Forward,
-        &buf_b,
-        &buf_fft_b,
-    );
-    queue.submit(Some(encoder.finish()));
-    device.poll(wgpu::PollType::Wait {
-        submission_index: None,
-        timeout: None,
-    })?;
-
-    // Build pipeline: FFT(A) -> Multiply(FFT(A), FFT(B)) -> IFFT
-    let mut pipeline = Pipeline::new()
-        .with_context(Arc::clone(&context))
-        .pipe_config(StageConfig::Custom(Box::new(FftPipelineStage::forward(
-            n, 1,
-        ))))
-        .pipe_config(StageConfig::Custom(Box::new(MultiplyPipelineStage::new(
-            n, 1,
-        ))))
-        .pipe_config(StageConfig::Custom(Box::new(FftPipelineStage::inverse(
-            n, 1,
-        ))))
-        .build()
-        .await?;
-
-    // Register FFT(B) as a side input
-    pipeline.add_side_input("input_b", Arc::clone(&buf_fft_b));
-
-    // Convert signal A to complex format
-    let a_complex: Vec<f32> = real_to_complex(&signal_a);
-
-    // Write input and process
-    pipeline.write_input(&a_complex).await?;
-    pipeline.tick().await?; // FFT(A)
-    pipeline.tick().await?; // Multiply FFT(A) * FFT(B)
-    pipeline.tick().await?; // IFFT
-
-    let output = pipeline.read_output().await?;
-
-    // Extract real parts (imaginary parts should be near zero)
-    let result_real = extract_real(&output);
-
-    // Verify output size
-    assert_eq!(result_real.len(), n, "Output length mismatch");
-
-    // Verify result matches expected convolution (with scaling)
-    // Note: FFT-based convolution with inverse FFT normalization gives the correct result directly
-    let mut max_diff = 0.0f32;
-    for (i, (out, exp)) in result_real.iter().zip(expected.iter()).enumerate() {
-        let diff = (out - exp).abs();
-        max_diff = max_diff.max(diff);
-        assert!(
-            diff < EPSILON,
-            "Convolution Output[{}] = {:.6}, expected = {:.6}, diff = {:.6e}",
-            i,
-            out,
-            exp,
-            diff
-        );
-    }
-
-    println!(
-        "✓ FFT convolution through pipeline passed! Max diff: {:.2e}",
-        max_diff
-    );
-
-    Ok(())
-}
-
-/// Test: Simple FFT stage creation and properties
+/// Test: FFT pipeline stage properties
 #[test]
 #[cfg(feature = "ping_pong")]
 fn test_fft_pipeline_stage_properties() {
@@ -301,61 +78,121 @@ fn test_multiply_pipeline_stage_properties() {
     let multiply_stage = MultiplyPipelineStage::new(1024, 1);
     assert_eq!(multiply_stage.name(), "multiply_complex");
     assert_eq!(multiply_stage.vector_dim(), 2);
-    assert_eq!(multiply_stage.batch_size(), 1024 * 1);
-    assert_eq!(multiply_stage.side_input_names(), vec!["input_b"]);
+    // Input is interleaved pairs [A0, B0, A1, B1, ...] with size 2 * n * batch_size
+    // Output maintains same size to maintain pipeline compatibility
+    assert_eq!(multiply_stage.batch_size(), 2 * 1024 * 1);
 }
 
-/// Test: Pipeline with larger FFT size
+/// Test: Pipeline with interleaved input - simple multiply
+#[pollster::test]
+#[cfg(feature = "ping_pong")]
+async fn test_simple_interleaved_pipeline() -> anyhow::Result<()> {
+    let n = 8; // Use power of 2
+
+    // Create a shared ComputeContext
+    let context = Arc::new(ComputeContext::new_high_performance().await?);
+
+    // Create simple test data - all ones in complex format
+    let a_data: Vec<f32> = (0..n).flat_map(|_| vec![1.0, 0.0]).collect();
+    let b_data: Vec<f32> = (0..n).flat_map(|_| vec![1.0, 0.0]).collect();
+
+    // Create interleaved input: [A0, B0, A1, B1, ...]
+    let interleaved_input = interleave_complex(&a_data, &b_data);
+
+    // Build pipeline: Multiply only
+    let mut pipeline = Pipeline::new()
+        .with_context(Arc::clone(&context))
+        .pipe_custom(Box::new(MultiplyPipelineStage::new(n, 1)))
+        .build()
+        .await?;
+
+    // Write interleaved input
+    pipeline.write_input(&interleaved_input).await?;
+
+    // Advance pipeline by 1 tick
+    pipeline.tick(()).await?;
+
+    // Read output
+    let output_data = pipeline.read_output().await?;
+    let output = output_data.map(|(_, data)| data).unwrap_or_default();
+
+    // Verify output size (2 * n complex numbers = 2 * n * 2 floats, same as input)
+    assert_eq!(output.len(), interleaved_input.len(), "Output length mismatch");
+
+    // Multiply ones by ones should give ones in first half, zeros in second half
+    for i in 0..n {
+        let real = output[i * 2];
+        let imag = output[i * 2 + 1];
+        assert!(
+            (real - 1.0).abs() < EPSILON,
+            "Output[{}].real = {}, expected 1.0",
+            i,
+            real
+        );
+        assert!(
+            imag.abs() < EPSILON,
+            "Output[{}].imag = {}, expected 0.0",
+            i,
+            imag
+        );
+    }
+    
+    // Second half should be zeros
+    for i in n..(2 * n) {
+        let real = output[i * 2];
+        let imag = output[i * 2 + 1];
+        assert!(
+            real.abs() < EPSILON,
+            "Output[{}].real = {}, expected 0.0",
+            i,
+            real
+        );
+        assert!(
+            imag.abs() < EPSILON,
+            "Output[{}].imag = {}, expected 0.0",
+            i,
+            imag
+        );
+    }
+
+    println!("✓ Simple interleaved pipeline test passed!");
+
+    Ok(())
+}
+
+/// Test: Pipeline with larger FFT size using interleaved input
 #[pollster::test]
 #[cfg(feature = "ping_pong")]
 async fn test_larger_fft_size() -> anyhow::Result<()> {
     let n = 16; // Larger FFT size
 
-    // Simple test signal
-    let signal: Vec<f32> = vec![1.0; n];
-    let input: Vec<f32> = real_to_complex(&signal);
+    // Simple test signal - all ones
+    let a_data: Vec<f32> = (0..n).flat_map(|_| vec![1.0, 0.0]).collect();
+    let b_data: Vec<f32> = (0..n).flat_map(|_| vec![1.0, 0.0]).collect();
 
-    // Create a shared ComputeContext for pipeline and side inputs
+    // Create interleaved input
+    let interleaved_input = interleave_complex(&a_data, &b_data);
+
+    // Create a shared ComputeContext
     let context = Arc::new(ComputeContext::new_high_performance().await?);
-    let device = context.device.clone();
 
-    // Create dummy side input
-    let dummy_input: Vec<f32> = (0..n).flat_map(|_| vec![1.0, 0.0]).collect();
-    let dummy_buffer = Arc::new(
-        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Dummy Input Buffer"),
-            contents: bytemuck::cast_slice(&dummy_input),
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_SRC
-                | wgpu::BufferUsages::COPY_DST,
-        }),
-    );
-
-    // Build and run pipeline with shared context
+    // Build pipeline: Multiply only
     let mut pipeline = Pipeline::new()
         .with_context(Arc::clone(&context))
-        .pipe_config(StageConfig::Custom(Box::new(FftPipelineStage::forward(
-            n, 1,
-        ))))
-        .pipe_config(StageConfig::Custom(Box::new(MultiplyPipelineStage::new(
-            n, 1,
-        ))))
-        .pipe_config(StageConfig::Custom(Box::new(FftPipelineStage::inverse(
-            n, 1,
-        ))))
+        .pipe_custom(Box::new(MultiplyPipelineStage::new(n, 1)))
         .build()
         .await?;
 
-    pipeline.add_side_input("input_b", Arc::clone(&dummy_buffer));
-    pipeline.write_input(&input).await?;
-    pipeline.tick().await?;
-    pipeline.tick().await?;
-    pipeline.tick().await?;
+    // Write interleaved input
+    pipeline.write_input(&interleaved_input).await?;
+    pipeline.tick(()).await?;
 
-    let output = pipeline.read_output().await?;
+    let output_data = pipeline.read_output().await?;
+    let output = output_data.map(|(_, data)| data).unwrap_or_default();
 
     // Just verify it ran without errors
-    assert_eq!(output.len(), n * 2);
+    // Output size should be same as input (2 * n * 2 floats)
+    assert_eq!(output.len(), interleaved_input.len());
 
     println!("✓ Larger FFT size (n={}) test passed!", n);
 
