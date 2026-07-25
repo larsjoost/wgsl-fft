@@ -1,6 +1,6 @@
 [package]
 name        = "wgsl-fft"
-version     = "0.4.4"
+version     = "0.5.0"
 edition     = "2021"
 rust-version = "1.73"
 description = "GPU-accelerated FFT using Webgpu compute shaders"
@@ -22,7 +22,7 @@ pollster    = "0.4"
 num-complex = "0.4"
 rustfft     = "6"
 thiserror   = "2"
-wgsl-ping-pong-pipeline = { git = "https://github.com/larsjoost/wgsl-ping-pong-pipeline.git", branch = "main" }
+wgsl-ping-pong-pipeline = "0.1.0"
 anyhow = { version = "1.0" }
 
 cudarc = { version = "0.19.4", optional = true, default-features = false, features = ["std", "driver", "cufft", "dynamic-loading", "cuda-12000"] }
@@ -36,7 +36,6 @@ hipfft = []
 
 [dev-dependencies]
 criterion = "0.5"
-wgsl-ping-pong-pipeline = { git = "https://github.com/larsjoost/wgsl-ping-pong-pipeline.git", branch = "main" }
 anyhow = "1.0"
 pollster = { version = "0.4", features = ["macro"] }
 
