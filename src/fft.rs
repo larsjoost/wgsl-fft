@@ -7,8 +7,8 @@
 //! Also implements **Bluestein's algorithm** for arbitrary FFT sizes (not just powers of 2).
 
 use std::any::Any;
-use std::sync::Mutex;
 use std::num::NonZeroU64;
+use std::sync::Mutex;
 
 use num_complex::Complex;
 

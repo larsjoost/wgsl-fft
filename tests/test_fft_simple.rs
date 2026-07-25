@@ -2,27 +2,24 @@
 //!
 //! This test requires the "ping_pong" feature to be enabled.
 
-#[cfg(feature = "ping_pong")]
 use std::sync::Arc;
-#[cfg(feature = "ping_pong")]
+
 use wgsl_fft::ping_pong_integration::FftPipelineStage;
-#[cfg(feature = "ping_pong")]
+
 use wgsl_ping_pong_pipeline::wgpu_utils::ComputeContext;
-#[cfg(feature = "ping_pong")]
+
 use wgsl_ping_pong_pipeline::Pipeline;
 
-#[cfg(feature = "ping_pong")]
 fn real_to_complex(signal: &[f32]) -> Vec<f32> {
     signal.iter().flat_map(|&x| vec![x, 0.0]).collect()
 }
 
-#[cfg(feature = "ping_pong")]
 fn extract_real(complex: &[f32]) -> Vec<f32> {
     complex.iter().step_by(2).map(|&x| x).collect()
 }
 
 #[pollster::test]
-#[cfg(feature = "ping_pong")]
+
 async fn test_fft_ifft_no_multiply() -> anyhow::Result<()> {
     let n = 8;
     let signal: Vec<f32> = vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
@@ -43,8 +40,8 @@ async fn test_fft_ifft_no_multiply() -> anyhow::Result<()> {
     pipeline.write_input(&input).await?;
 
     // Advance pipeline by 2 ticks
-    pipeline.tick(()).await?;
-    pipeline.tick(()).await?;
+    pipeline.tick(Some(())).await?;
+    pipeline.tick(Some(())).await?;
 
     // Read output
     let output_data = pipeline.read_output().await?;

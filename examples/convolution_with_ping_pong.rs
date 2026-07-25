@@ -585,7 +585,7 @@ fn main() -> Result<()> {
         // Tick the pipeline - data needs to propagate through all 4 stages
         println!("\nTicking pipeline...");
         for i in 0..pipeline.num_stages() {
-            pipeline.tick(0u64).await?;
+            pipeline.tick(Some(0u64)).await?;
             println!("  Tick {}: Data propagated to stage {}", i + 1, i + 1);
         }
         println!("✓ Pipeline complete");

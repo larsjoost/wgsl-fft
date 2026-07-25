@@ -27,7 +27,6 @@
 //!     .await?;
 //! ```
 
-
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -41,7 +40,6 @@ use wgsl_ping_pong_pipeline::wgpu_utils::ComputeContext;
 use anyhow::{anyhow, Result};
 
 use crate::{FftDirection, FftPipelines};
-
 
 /// A PipelineStage that performs FFT or IFFT operations using wgsl-fft's FftPipelines.
 ///
@@ -284,6 +282,9 @@ impl PipelineStage for FftPipelineStage {
     }
 }
 
+unsafe impl Send for FftPipelineStage {}
+unsafe impl Sync for FftPipelineStage {}
+
 impl std::fmt::Debug for FftPipelineStage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FftPipelineStage")
@@ -362,6 +363,9 @@ impl MultiplyPipelineStage {
         }
     }
 }
+
+unsafe impl Send for MultiplyPipelineStage {}
+unsafe impl Sync for MultiplyPipelineStage {}
 
 impl Debug for MultiplyPipelineStage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -699,4 +703,3 @@ mod tests {
         assert_eq!(stage.batch_size(), 2 * 1024 * 1);
     }
 }
-

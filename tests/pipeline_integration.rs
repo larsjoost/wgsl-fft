@@ -7,14 +7,10 @@
 
 use std::sync::Arc;
 
-#[cfg(feature = "ping_pong")]
 use wgsl_fft::ping_pong_integration::{FftPipelineStage, MultiplyPipelineStage};
-#[cfg(feature = "ping_pong")]
 use wgsl_ping_pong_pipeline::wgpu_utils::ComputeContext;
-#[cfg(feature = "ping_pong")]
 use wgsl_ping_pong_pipeline::{Pipeline, PipelineStage};
 
-#[cfg(feature = "ping_pong")]
 /// CPU circular convolution for verification.
 fn cpu_convolve_circular(a: &[f32], b: &[f32]) -> Vec<f32> {
     let n = a.len();
@@ -28,19 +24,16 @@ fn cpu_convolve_circular(a: &[f32], b: &[f32]) -> Vec<f32> {
     result
 }
 
-#[cfg(feature = "ping_pong")]
 /// Converts real signal to complex interleaved format (re, im, re, im, ...)
 fn real_to_complex(signal: &[f32]) -> Vec<f32> {
     signal.iter().flat_map(|&x| vec![x, 0.0]).collect()
 }
 
-#[cfg(feature = "ping_pong")]
 /// Extracts real parts from complex interleaved format
 fn extract_real(complex: &[f32]) -> Vec<f32> {
     complex.iter().step_by(2).map(|&x| x).collect()
 }
 
-#[cfg(feature = "ping_pong")]
 /// Creates interleaved pairs [A0, B0, A1, B1, ...] from two complex vectors
 fn interleave_complex(a: &[f32], b: &[f32]) -> Vec<f32> {
     let mut result = Vec::with_capacity(a.len() + b.len());
@@ -53,12 +46,10 @@ fn interleave_complex(a: &[f32], b: &[f32]) -> Vec<f32> {
     result
 }
 
-#[cfg(feature = "ping_pong")]
 const EPSILON: f32 = 1e-4;
 
 /// Test: FFT pipeline stage properties
 #[test]
-#[cfg(feature = "ping_pong")]
 fn test_fft_pipeline_stage_properties() {
     let forward_stage = FftPipelineStage::forward(1024, 1);
     assert_eq!(forward_stage.name(), "fft_forward");
@@ -73,7 +64,6 @@ fn test_fft_pipeline_stage_properties() {
 
 /// Test: Multiply stage creation and properties
 #[test]
-#[cfg(feature = "ping_pong")]
 fn test_multiply_pipeline_stage_properties() {
     let multiply_stage = MultiplyPipelineStage::new(1024, 1);
     assert_eq!(multiply_stage.name(), "multiply_complex");
@@ -85,7 +75,6 @@ fn test_multiply_pipeline_stage_properties() {
 
 /// Test: Pipeline with interleaved input - simple multiply
 #[pollster::test]
-#[cfg(feature = "ping_pong")]
 async fn test_simple_interleaved_pipeline() -> anyhow::Result<()> {
     let n = 8; // Use power of 2
 
@@ -110,14 +99,18 @@ async fn test_simple_interleaved_pipeline() -> anyhow::Result<()> {
     pipeline.write_input(&interleaved_input).await?;
 
     // Advance pipeline by 1 tick
-    pipeline.tick(()).await?;
+    pipeline.tick(Some(())).await?;
 
     // Read output
     let output_data = pipeline.read_output().await?;
     let output = output_data.map(|(_, data)| data).unwrap_or_default();
 
     // Verify output size (2 * n complex numbers = 2 * n * 2 floats, same as input)
-    assert_eq!(output.len(), interleaved_input.len(), "Output length mismatch");
+    assert_eq!(
+        output.len(),
+        interleaved_input.len(),
+        "Output length mismatch"
+    );
 
     // Multiply ones by ones should give ones in first half, zeros in second half
     for i in 0..n {
@@ -136,7 +129,7 @@ async fn test_simple_interleaved_pipeline() -> anyhow::Result<()> {
             imag
         );
     }
-    
+
     // Second half should be zeros
     for i in n..(2 * n) {
         let real = output[i * 2];
@@ -162,7 +155,6 @@ async fn test_simple_interleaved_pipeline() -> anyhow::Result<()> {
 
 /// Test: Pipeline with larger FFT size using interleaved input
 #[pollster::test]
-#[cfg(feature = "ping_pong")]
 async fn test_larger_fft_size() -> anyhow::Result<()> {
     let n = 16; // Larger FFT size
 
@@ -185,7 +177,7 @@ async fn test_larger_fft_size() -> anyhow::Result<()> {
 
     // Write interleaved input
     pipeline.write_input(&interleaved_input).await?;
-    pipeline.tick(()).await?;
+    pipeline.tick(Some(())).await?;
 
     let output_data = pipeline.read_output().await?;
     let output = output_data.map(|(_, data)| data).unwrap_or_default();
