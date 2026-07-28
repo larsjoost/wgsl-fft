@@ -278,8 +278,8 @@ impl FftPipelines {
             let scratch_guard = self.scratch.lock().unwrap();
             let scratch_buf = scratch_guard.get(&n).unwrap();
             let mut cache = self.call_cache.lock().unwrap();
-            if !cache.contains_key(&key) {
-                let entry = Self::build_fft_cache(
+            cache.entry(key).or_insert_with(|| {
+                Self::build_fft_cache(
                     &self.device,
                     &self.bgl,
                     n,
@@ -287,9 +287,8 @@ impl FftPipelines {
                     input_buf,
                     output_buf,
                     scratch_buf,
-                );
-                cache.insert(key, entry);
-            }
+                )
+            });
         }
 
         // Encode using cached bind groups — zero allocations
@@ -412,7 +411,7 @@ impl FftPipelines {
         let key = (n, buf as *const _ as usize);
         {
             let mut cache = self.norm_cache.lock().unwrap();
-            if !cache.contains_key(&key) {
+            cache.entry(key).or_insert_with(|| {
                 let params = self
                     .device
                     .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -434,14 +433,11 @@ impl FftPipelines {
                         },
                     ],
                 });
-                cache.insert(
-                    key,
-                    FftNormCache {
-                        params,
-                        bind_group: bg,
-                    },
-                );
-            }
+                FftNormCache {
+                    params,
+                    bind_group: bg,
+                }
+            });
         }
         let cache_guard = self.norm_cache.lock().unwrap();
         let cached = cache_guard.get(&key).unwrap();

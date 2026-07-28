@@ -15,6 +15,9 @@ use num_complex::Complex;
 use crate::error::{FftError, Result};
 use crate::shaders;
 
+/// Type alias for Bluestein cache map
+pub type BluesteinCacheMap = std::collections::HashMap<(usize, bool), Vec<Complex<f32>>>;
+
 /// Number of components in a complex number (real and imaginary)
 const COMPLEX_COMPONENT_COUNT: usize = 2;
 
@@ -103,7 +106,7 @@ pub struct GpuFft {
     pub pipeline_bluestein_inv_chirp: wgpu::ComputePipeline,
     pub pipeline_bluestein_zero_pad: wgpu::ComputePipeline,
     /// Cache for precomputed Bluestein chirp FFTs: (n, is_inverse) -> B_fft
-    pub bluestein_cache: Mutex<std::collections::HashMap<(usize, bool), Vec<Complex<f32>>>>,
+    pub bluestein_cache: Mutex<BluesteinCacheMap>,
 }
 
 impl FftExecutor for GpuFft {
@@ -264,7 +267,7 @@ impl GpuFft {
             pipeline_bluestein_chirp,
             pipeline_bluestein_inv_chirp,
             pipeline_bluestein_zero_pad,
-            bluestein_cache: Mutex::new(std::collections::HashMap::new()),
+            bluestein_cache: Mutex::new(BluesteinCacheMap::new()),
         })
     }
 
@@ -353,7 +356,7 @@ impl GpuFft {
             pipeline_bluestein_chirp,
             pipeline_bluestein_inv_chirp,
             pipeline_bluestein_zero_pad,
-            bluestein_cache: Mutex::new(std::collections::HashMap::new()),
+            bluestein_cache: Mutex::new(BluesteinCacheMap::new()),
         })
     }
 

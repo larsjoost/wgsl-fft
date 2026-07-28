@@ -476,7 +476,7 @@ impl PipelineStage for MultiplyPipelineStage {
         // We need to dispatch enough workgroups to cover all pair indices up to element_count/2
         let workgroup_size = 256u32;
         let pair_count = total_elements / 2;
-        let dispatch_count = (pair_count as u32 + workgroup_size - 1) / workgroup_size;
+        let dispatch_count = (pair_count as u32).div_ceil(workgroup_size);
         pass.dispatch_workgroups(dispatch_count, 1, 1);
 
         Ok(())
