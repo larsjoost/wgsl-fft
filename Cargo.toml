@@ -22,7 +22,7 @@ pollster    = "0.4"
 num-complex = "0.4"
 rustfft     = "6"
 thiserror   = "2"
-wgsl-ping-pong-pipeline = "0.1.0"
+wgsl-ping-pong-pipeline = { path = "../wgsl-ping-pong-pipeline" }
 anyhow = { version = "1.0" }
 
 cudarc = { version = "0.19.4", optional = true, default-features = false, features = ["std", "driver", "cufft", "dynamic-loading", "cuda-12000"] }

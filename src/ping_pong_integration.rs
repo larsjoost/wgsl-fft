@@ -300,15 +300,16 @@ impl std::fmt::Debug for FftPipelineStage {
 /// A PipelineStage that performs element-wise complex multiplication.
 ///
 /// This stage multiplies two complex buffers element-wise: `output[i] = input_a[i] * input_b[i]`
-/// Input is interleaved pairs [A0, B0, A1, B1, ...] where each pair at [2*i, 2*i+1] contains
-/// (A_freq[i], B_freq[i]), and the stage multiplies each pair.
+/// Input is concatenated [A_freq...][B_freq...] where A_freq is in the first half
+/// and B_freq is in the second half. The stage multiplies A_freq[i] with B_freq[i].
 ///
 /// # Bind Group Layout
 ///
-/// This stage uses a custom bind group layout with 3 bindings:
-/// - Binding 0: input (storage, read-only) - contains interleaved pairs [A0, B0, A1, B1, ...]
+/// This stage uses a custom bind group layout with 4 bindings:
+/// - Binding 0: input (storage, read-only) - contains concatenated [A_freq...][B_freq...]
 /// - Binding 1: output (storage, read-write) - contains products [A0*B0, A1*B1, ...]
 /// - Binding 2: element_count uniform buffer
+/// - Binding 3: half_count uniform buffer
 ///
 /// # Usage
 ///
@@ -318,7 +319,7 @@ impl std::fmt::Debug for FftPipelineStage {
 /// use wgsl_fft::ping_pong_integration::MultiplyPipelineStage;
 ///
 /// // Create a multiply stage with n=1024, batch_size=1
-/// // The input should be a buffer containing interleaved pairs [A0, B0, A1, B1, ...]
+/// // The input should be a buffer containing concatenated [A_freq...][B_freq...]
 /// let multiply_stage = MultiplyPipelineStage::new(1024, 1);
 /// let pipeline = Pipeline::new()
 ///     .pipe_config(StageConfig::Custom(Box::new(multiply_stage)))
@@ -341,6 +342,8 @@ pub struct MultiplyPipelineStage {
     queue: Option<wgpu::Queue>,
     /// Buffer to store the actual element count as a uniform
     element_count_uniform: Option<wgpu::Buffer>,
+    /// Buffer to store half_count as a uniform (for concatenated [A][B] format)
+    half_count_uniform: Option<wgpu::Buffer>,
 }
 
 impl MultiplyPipelineStage {
@@ -360,6 +363,7 @@ impl MultiplyPipelineStage {
             device: None,
             queue: None,
             element_count_uniform: None,
+            half_count_uniform: None,
         }
     }
 }
@@ -418,15 +422,15 @@ impl PipelineStage for MultiplyPipelineStage {
             anyhow!("MultiplyPipelineStage queue must be initialized before encode()")
         })?;
 
-        // Input contains interleaved pairs [A0, B0, A1, B1, ...]
-        // Each pair at [2*i, 2*i+1] contains (A_freq[i], B_freq[i])
-        // Multiply each pair to get output[i]
-        // The output has size n * batch_size
+        // Input is concatenated [A_freq...][B_freq...]
+        // A_freq is in the first half, B_freq is in the second half
+        // Multiply A_freq[i] with B_freq[i] for each i
 
         // Determine the element count to use
         let element_size = 2 * std::mem::size_of::<f32>() as u64;
         let buffer_total_elements = (output.size() / element_size) as usize;
         let total_elements = self.actual_total_elements.unwrap_or(buffer_total_elements);
+        let half_count = total_elements / 2;
 
         // Update the element count uniform buffer
         if let Some(ref element_count_uniform) = self.element_count_uniform {
@@ -436,8 +440,17 @@ impl PipelineStage for MultiplyPipelineStage {
                 bytemuck::cast_slice(&[total_elements as u32]),
             );
         }
+        
+        // Update the half count uniform buffer
+        if let Some(ref half_count_uniform) = self.half_count_uniform {
+            queue.write_buffer(
+                half_count_uniform,
+                0,
+                bytemuck::cast_slice(&[half_count as u32]),
+            );
+        }
 
-        // Create bind group with input, output, and element count uniform buffers
+        // Create bind group with input, output, element count, and half count uniform buffers
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("MultiplyPipelineStage Bind Group"),
             layout: bgl,
@@ -460,6 +473,16 @@ impl PipelineStage for MultiplyPipelineStage {
                         })?
                         .as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self
+                        .half_count_uniform
+                        .as_ref()
+                        .ok_or_else(|| {
+                            anyhow!("MultiplyPipelineStage half_count_uniform not initialized")
+                        })?
+                        .as_entire_binding(),
+                },
             ],
         });
 
@@ -471,12 +494,10 @@ impl PipelineStage for MultiplyPipelineStage {
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, &bind_group, &[]);
 
-        // Dispatch based on total elements (input size)
-        // Shader processes pairs: for each pair_idx, it reads [pair_idx*2, pair_idx*2+1]
-        // We need to dispatch enough workgroups to cover all pair indices up to element_count/2
+        // Dispatch based on total elements
+        // Shader processes each element: for each idx < half_count, it reads [idx] and [idx + half_count]
         let workgroup_size = 256u32;
-        let pair_count = total_elements / 2;
-        let dispatch_count = (pair_count as u32).div_ceil(workgroup_size);
+        let dispatch_count = (total_elements as u32).div_ceil(workgroup_size);
         pass.dispatch_workgroups(dispatch_count, 1, 1);
 
         Ok(())
@@ -486,7 +507,7 @@ impl PipelineStage for MultiplyPipelineStage {
         let device = &context.device;
         let queue = &context.queue;
 
-        // Create bind group layout with 3 bindings (input, output, element_count uniform)
+        // Create bind group layout with 4 bindings (input, output, element_count uniform, half_count uniform)
         let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("MultiplyPipelineStage Bind Group Layout"),
             entries: &[
@@ -520,12 +541,29 @@ impl PipelineStage for MultiplyPipelineStage {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
 
         // Create element count uniform buffer
         let element_count_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("MultiplyPipelineStage element_count uniform"),
+            contents: bytemuck::cast_slice(&[0u32]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        // Create half count uniform buffer
+        let half_count_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("MultiplyPipelineStage half_count uniform"),
             contents: bytemuck::cast_slice(&[0u32]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
@@ -557,6 +595,7 @@ impl PipelineStage for MultiplyPipelineStage {
         self.device = Some(device.clone());
         self.queue = Some(queue.clone());
         self.element_count_uniform = Some(element_count_uniform);
+        self.half_count_uniform = Some(half_count_uniform);
 
         Ok(())
     }
@@ -601,9 +640,9 @@ impl PipelineStage for MultiplyPipelineStage {
     }
 }
 
-/// WGSL shader for complex multiplication with interleaved pair input.
-/// Input is interleaved pairs [A0, B0, A1, B1, ...].
-/// Each pair at positions [2*i, 2*i+1] contains (A_freq[i], B_freq[i]).
+/// WGSL shader for complex multiplication with concatenated input.
+/// Input is concatenated [A_freq...][B_freq...] where A_freq is in the first half
+/// and B_freq is in the second half.
 /// Output is [A0*B0, A1*B1, ..., zeros] to maintain the same size as input.
 ///
 /// Each complex number is stored as vec2<f32> where:
@@ -622,6 +661,9 @@ var<storage, read_write> output: array<vec2<f32>>;
 @group(0) @binding(2)
 var<uniform> element_count: u32;
 
+@group(0) @binding(3)
+var<uniform> half_count: u32;
+
 fn cmul(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
     return vec2<f32>(
         a.x * b.x - a.y * b.y,
@@ -631,17 +673,18 @@ fn cmul(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
 
 @compute @workgroup_size(256, 1, 1)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let pair_idx = gid.x;
-    let a_idx = pair_idx * 2u;
-    let b_idx = a_idx + 1u;
+    let idx = gid.x;
     
-    if (b_idx < element_count) {
-        let a_freq = input_data[a_idx];
-        let b_freq = input_data[b_idx];
-        output[pair_idx] = cmul(a_freq, b_freq);
-    } else if (pair_idx < element_count) {
-        // Fill remaining with zeros
-        output[pair_idx] = vec2<f32>(0.0, 0.0);
+    // Input is concatenated: [A_freq...][B_freq...]
+    // A_freq is in indices [0..half_count]
+    // B_freq is in indices [half_count..element_count]
+    if (idx < half_count) {
+        let a_freq = input_data[idx];
+        let b_freq = input_data[idx + half_count];
+        output[idx] = cmul(a_freq, b_freq);
+    } else if (idx < element_count) {
+        // Fill second half with zeros
+        output[idx] = vec2<f32>(0.0, 0.0);
     }
 }
 "#;
@@ -673,6 +716,713 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     output[idx] = cmul(input_a[idx], input_b[idx]);
 }
 "#;
+
+/// A pipeline stage that performs normalization (divide by N).
+///
+/// This stage is used after inverse FFT to scale the result correctly.
+/// The FFT/IFFT pair without normalization scales amplitudes by N,
+/// so we divide by N to get the correct result.
+pub struct NormalizePipelineStage {
+    n: usize,
+    batch_size: u32,
+    /// When true, batch_size is doubled to accommodate combined [A][B] input
+    combined: bool,
+    /// Cached device for creating resources
+    device: Option<wgpu::Device>,
+    /// Cached queue for creating resources
+    queue: Option<wgpu::Queue>,
+    /// Cached compute pipeline
+    compute_pipeline: Option<wgpu::ComputePipeline>,
+    /// Cached bind group layout
+    bind_group_layout: Option<wgpu::BindGroupLayout>,
+    /// Buffer to store n as a uniform for the shader
+    n_uniform_buffer: Option<wgpu::Buffer>,
+}
+
+impl NormalizePipelineStage {
+    /// Creates a new normalization stage.
+    ///
+    /// # Arguments
+    /// * `n` - FFT size (number of complex elements)
+    /// * `batch_size` - Number of batches to process in parallel
+    pub fn new(n: usize, batch_size: u32) -> Self {
+        Self {
+            n,
+            batch_size,
+            combined: false,
+            device: None,
+            queue: None,
+            compute_pipeline: None,
+            bind_group_layout: None,
+            n_uniform_buffer: None,
+        }
+    }
+
+    /// Creates a new normalization stage for combined mode.
+    /// In combined mode, batch_size is doubled to accommodate [A][B] input.
+    ///
+    /// # Arguments
+    /// * `n` - FFT size (number of complex elements)
+    /// * `batch_size` - Number of batches to process in parallel
+    pub fn new_combined(n: usize, batch_size: u32) -> Self {
+        Self {
+            n,
+            batch_size,
+            combined: true,
+            device: None,
+            queue: None,
+            compute_pipeline: None,
+            bind_group_layout: None,
+            n_uniform_buffer: None,
+        }
+    }
+
+    /// Helper method to update the n uniform buffer with the current n value
+    fn update_n_uniform_buffer(&self) -> Result<()> {
+        if let (Some(queue), Some(buffer)) = (self.queue.as_ref(), self.n_uniform_buffer.as_ref()) {
+            queue.write_buffer(buffer, 0, bytemuck::cast_slice(&[self.n as f32]));
+        }
+        Ok(())
+    }
+}
+
+unsafe impl Send for NormalizePipelineStage {}
+unsafe impl Sync for NormalizePipelineStage {}
+
+impl std::fmt::Debug for NormalizePipelineStage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NormalizePipelineStage")
+            .field("n", &self.n)
+            .field("batch_size", &self.batch_size)
+            .field("combined", &self.combined)
+            .field("device_initialized", &self.device.is_some())
+            .finish()
+    }
+}
+
+impl PipelineStage for NormalizePipelineStage {
+    fn name(&self) -> &str {
+        "normalize"
+    }
+
+    fn vector_dim(&self) -> usize {
+        // Complex numbers are vec2<f32>
+        2
+    }
+
+    fn batch_size(&self) -> usize {
+        if self.combined {
+            // In combined mode, batch_size is doubled
+            2 * self.n * self.batch_size as usize
+        } else {
+            self.n * self.batch_size as usize
+        }
+    }
+
+    fn encode(
+        &self,
+        encoder: &mut CommandEncoder,
+        input: &wgpu::Buffer,
+        output: &wgpu::Buffer,
+        _side_inputs: &HashMap<String, Arc<wgpu::Buffer>>,
+    ) -> Result<()> {
+        // Check if we should normalize
+        // FftPipelines doesn't normalize, so we always need to normalize
+        let device = self
+            .device
+            .as_ref()
+            .ok_or_else(|| anyhow!("NormalizePipelineStage not initialized"))?;
+        let pipeline = self
+            .compute_pipeline
+            .as_ref()
+            .ok_or_else(|| anyhow!("NormalizePipelineStage compute pipeline not created"))?;
+        let bgl = self
+            .bind_group_layout
+            .as_ref()
+            .ok_or_else(|| anyhow!("NormalizePipelineStage bind group layout not created"))?;
+        let n_uniform_buffer = self
+            .n_uniform_buffer
+            .as_ref()
+            .ok_or_else(|| anyhow!("NormalizePipelineStage n_uniform_buffer not created"))?;
+
+        // Create bind group with input, output, and n uniform buffers
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Normalize Bind Group"),
+            layout: bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: input.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: output.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: n_uniform_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        // Create compute pass
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("Normalize Pass"),
+            timestamp_writes: None,
+        });
+
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, &bind_group, &[]);
+
+        // Dispatch based on actual output buffer size to handle resized buffers
+        let element_size = 2 * std::mem::size_of::<f32>() as u64;
+        let total_elements = (output.size() / element_size) as u32;
+        let workgroup_size = 256u32;
+        let dispatch_count = total_elements.div_ceil(workgroup_size);
+        pass.dispatch_workgroups(dispatch_count, 1, 1);
+
+        Ok(())
+    }
+
+    fn initialize(&mut self, context: &ComputeContext) -> Result<()> {
+        self.device = Some(context.device.clone());
+        self.queue = Some(context.queue.clone());
+
+        // Create bind group layout with 3 bindings (input, output, n_uniform)
+        self.bind_group_layout = Some(context.device.create_bind_group_layout(
+            &wgpu::BindGroupLayoutDescriptor {
+                label: Some("Normalize Bind Group Layout"),
+                entries: &[
+                    // Binding 0: input buffer (storage, read-only)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // Binding 1: output buffer (storage, read-write)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // Binding 2: n uniform
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            },
+        ));
+
+        // Create shader module that uses a uniform for n
+        let shader_source = r#"
+@group(0) @binding(0)
+var<storage, read> input_data: array<vec2<f32>>;
+
+@group(0) @binding(1)
+var<storage, read_write> output_data: array<vec2<f32>>;
+
+@group(0) @binding(2)
+var<uniform> n_uniform: f32;
+
+@compute @workgroup_size(256, 1, 1)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if (idx >= arrayLength(&output_data)) { return; }
+    let n = n_uniform;
+    output_data[idx] = input_data[idx] / n;
+}
+"#;
+
+        let shader = context
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("Normalize Shader"),
+                source: wgpu::ShaderSource::Wgsl(shader_source.into()),
+            });
+
+        // Create pipeline layout
+        let pipeline_layout =
+            context
+                .device
+                .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("Normalize Pipeline Layout"),
+                    bind_group_layouts: &[Some(self.bind_group_layout.as_ref().unwrap())],
+                    immediate_size: 0,
+                });
+
+        // Create compute pipeline
+        self.compute_pipeline = Some(context.device.create_compute_pipeline(
+            &wgpu::ComputePipelineDescriptor {
+                label: Some("Normalize Pipeline"),
+                layout: Some(&pipeline_layout),
+                module: &shader,
+                entry_point: Some("main"),
+                compilation_options: Default::default(),
+                cache: None,
+            },
+        ));
+
+        // Create n uniform buffer
+        self.n_uniform_buffer = Some(context.device.create_buffer_init(
+            &wgpu::util::BufferInitDescriptor {
+                label: Some("Normalize n uniform buffer"),
+                contents: bytemuck::cast_slice(&[self.n as f32]),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            },
+        ));
+
+        Ok(())
+    }
+
+    fn requires_initialization(&self) -> bool {
+        true
+    }
+
+    fn supports_dynamic_resizing(&self) -> bool {
+        true
+    }
+
+    fn resize(&mut self, new_batch_size: usize, new_vector_dim: usize) -> Result<()> {
+        // For NormalizePipelineStage, we expect vector_dim to always be 2 (complex numbers)
+        if new_vector_dim != 2 {
+            anyhow::bail!("NormalizePipelineStage requires vector_dim of 2 for complex numbers");
+        }
+
+        // new_batch_size is total elements
+        // In combined mode, total_elements = 2 * n * batch_size
+        // In non-combined mode, total_elements = n * batch_size
+        if self.n == 0 {
+            anyhow::bail!("NormalizePipelineStage n is 0");
+        }
+
+        let total_elements = new_batch_size;
+        if self.combined {
+            // In combined mode, total_elements = 2 * n * batch_size
+            if total_elements % (2 * self.n) != 0 {
+                anyhow::bail!(
+                    "New batch size {} is not a multiple of 2 * n {}",
+                    total_elements,
+                    self.n
+                );
+            }
+            self.batch_size = (total_elements / (2 * self.n)) as u32;
+        } else {
+            if total_elements % self.n != 0 {
+                anyhow::bail!(
+                    "New batch size {} is not a multiple of n {}",
+                    total_elements,
+                    self.n
+                );
+            }
+            self.batch_size = (total_elements / self.n) as u32;
+        }
+
+        // Update the n uniform buffer with current n value
+        self.update_n_uniform_buffer()?;
+
+        Ok(())
+    }
+
+    fn update_n(&mut self, new_n: usize) -> Result<()> {
+        self.n = new_n;
+        // Update the n uniform buffer with new n value
+        self.update_n_uniform_buffer()?;
+        Ok(())
+    }
+}
+
+/// A pipeline stage that adds Gaussian noise to the input.
+///
+/// Uses Box-Muller transform to generate normally distributed random numbers.
+/// The noise is added element-wise: output[i] = input[i] + N(0, sigma)
+#[derive(Clone)]
+pub struct NoisePipelineStage {
+    n: usize,
+    batch_size: u32,
+    /// When true, batch_size is doubled to accommodate combined [A][B] input
+    combined: bool,
+    /// Cached device for creating resources
+    device: Option<wgpu::Device>,
+    /// Cached compute pipeline
+    compute_pipeline: Option<wgpu::ComputePipeline>,
+    /// Cached bind group layout
+    bind_group_layout: Option<wgpu::BindGroupLayout>,
+    /// Current sigma value (cached for re-creation)
+    current_sigma: f32,
+}
+
+impl NoisePipelineStage {
+    /// Creates a new noise stage.
+    ///
+    /// # Arguments
+    /// * `n` - Number of complex elements
+    /// * `batch_size` - Number of batches to process in parallel
+    pub fn new(n: usize, batch_size: u32) -> Self {
+        Self {
+            n,
+            batch_size,
+            combined: false,
+            device: None,
+            compute_pipeline: None,
+            bind_group_layout: None,
+            current_sigma: 0.0,
+        }
+    }
+
+    /// Creates a new noise stage for combined mode.
+    /// In combined mode, batch_size is doubled to accommodate [A][B] input.
+    ///
+    /// # Arguments
+    /// * `n` - Number of complex elements
+    /// * `batch_size` - Number of batches to process in parallel
+    pub fn new_combined(n: usize, batch_size: u32) -> Self {
+        Self {
+            n,
+            batch_size,
+            combined: true,
+            device: None,
+            compute_pipeline: None,
+            bind_group_layout: None,
+            current_sigma: 0.0,
+        }
+    }
+}
+
+unsafe impl Send for NoisePipelineStage {}
+unsafe impl Sync for NoisePipelineStage {}
+
+impl std::fmt::Debug for NoisePipelineStage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NoisePipelineStage")
+            .field("n", &self.n)
+            .field("batch_size", &self.batch_size)
+            .field("combined", &self.combined)
+            .field("current_sigma", &self.current_sigma)
+            .field("device_initialized", &self.device.is_some())
+            .finish()
+    }
+}
+
+impl PipelineStage for NoisePipelineStage {
+    fn name(&self) -> &str {
+        "noise"
+    }
+
+    fn vector_dim(&self) -> usize {
+        // Complex numbers are vec2<f32>
+        2
+    }
+
+    fn batch_size(&self) -> usize {
+        if self.combined {
+            // In combined mode, batch_size is doubled
+            2 * self.n * self.batch_size as usize
+        } else {
+            self.n * self.batch_size as usize
+        }
+    }
+
+    fn side_input_names(&self) -> Vec<&str> {
+        vec!["sigma", "seed"]
+    }
+
+    fn encode(
+        &self,
+        encoder: &mut CommandEncoder,
+        input: &wgpu::Buffer,
+        output: &wgpu::Buffer,
+        side_inputs: &HashMap<String, Arc<wgpu::Buffer>>,
+    ) -> Result<()> {
+        let device = self
+            .device
+            .as_ref()
+            .ok_or_else(|| anyhow!("NoisePipelineStage not initialized"))?;
+        let pipeline = self
+            .compute_pipeline
+            .as_ref()
+            .ok_or_else(|| anyhow!("NoisePipelineStage compute pipeline not created"))?;
+        let bgl = self
+            .bind_group_layout
+            .as_ref()
+            .ok_or_else(|| anyhow!("NoisePipelineStage bind group layout not created"))?;
+
+        // Get sigma from side input
+        let sigma_buffer = side_inputs
+            .get("sigma")
+            .ok_or_else(|| anyhow!("NoisePipelineStage requires side input 'sigma'"))?;
+        // Get seed from side input
+        let seed_buffer = side_inputs
+            .get("seed")
+            .ok_or_else(|| anyhow!("NoisePipelineStage requires side input 'seed'"))?;
+
+        // Create bind group with input, output, sigma uniform, and seed uniform
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Noise Bind Group"),
+            layout: bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: input.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: output.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: sigma_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: seed_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        // Create compute pass
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("Noise Pass"),
+            timestamp_writes: None,
+        });
+
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, &bind_group, &[]);
+
+        // Dispatch based on actual output buffer size to handle resized buffers
+        let element_size = 2 * std::mem::size_of::<f32>() as u64;
+        let total_elements = (output.size() / element_size) as u32;
+        let workgroup_size = 256u32;
+        let dispatch_count = total_elements.div_ceil(workgroup_size);
+        pass.dispatch_workgroups(dispatch_count, 1, 1);
+
+        Ok(())
+    }
+
+    fn initialize(&mut self, context: &ComputeContext) -> Result<()> {
+        self.device = Some(context.device.clone());
+
+        // Create bind group layout with 4 bindings
+        self.bind_group_layout = Some(context.device.create_bind_group_layout(
+            &wgpu::BindGroupLayoutDescriptor {
+                label: Some("Noise Bind Group Layout"),
+                entries: &[
+                    // Binding 0: input buffer (storage, read-only)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // Binding 1: output buffer (storage, read-write)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // Binding 2: sigma uniform
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // Binding 3: seed uniform
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            },
+        ));
+
+        // Create shader module with Box-Muller transform for Gaussian noise
+        // We use a simple approach: generate random numbers using wgpu's built-in functions
+        // and scale by sigma
+        let shader_source = r#"
+// Box-Muller transform for generating Gaussian random numbers
+// We use a simple LCG-based PRNG for reproducibility
+
+@group(0) @binding(0)
+var<storage, read> input_data: array<vec2<f32>>;
+
+@group(0) @binding(1)
+var<storage, read_write> output_data: array<vec2<f32>>;
+
+@group(0) @binding(2)
+var<uniform> sigma_data: f32;
+
+@group(0) @binding(3)
+var<uniform> seed_data: u32;
+
+// Simple hash function for seeding
+fn hash(u: u32) -> u32 {
+    var v = u * 2654435761u + 0x9e3779b9u;
+    v = (v ^ (v >> 16)) * 0x85ebca6bu;
+    v = (v ^ (v >> 13)) * 0xc2b2ae35u;
+    return v ^ (v >> 16);
+}
+
+// Pseudo-random number generator
+fn rand(u: u32) -> f32 {
+    let h = hash(u);
+    return f32(h) / f32(0xffffffffu);
+}
+
+// Box-Muller transform: converts two uniform random numbers to two Gaussian
+fn box_muller(u1: f32, u2: f32) -> vec2<f32> {
+    let r = sqrt(-2.0 * log(u1 + 1e-10));
+    let theta = 2.0 * 3.1415926535 * u2;
+    return vec2<f32>(r * cos(theta), r * sin(theta));
+}
+
+@compute @workgroup_size(256, 1, 1)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if (idx >= arrayLength(&output_data)) { return; }
+    
+    let sigma = sigma_data;
+    let seed = seed_data;
+    
+    // If sigma is 0, just copy input
+    if (sigma == 0.0) {
+        output_data[idx] = input_data[idx];
+        return;
+    }
+    
+    // Generate two random numbers for Box-Muller
+    // Use index and seed as unique inputs to ensure different noise per batch
+    let seed1 = hash(idx * 2654435761u + 1u + seed);
+    let seed2 = hash(idx * 2654435761u + 2u + seed);
+    let u1 = rand(seed1);
+    let u2 = rand(seed2);
+    
+    // Generate Gaussian noise
+    let noise = box_muller(u1, u2);
+    
+    // Add noise to input and write to output
+    output_data[idx] = input_data[idx] + noise * sigma;
+}
+"#;
+
+        let shader = context
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("Noise Shader"),
+                source: wgpu::ShaderSource::Wgsl(shader_source.into()),
+            });
+
+        // Create pipeline layout
+        let pipeline_layout =
+            context
+                .device
+                .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("Noise Pipeline Layout"),
+                    bind_group_layouts: &[Some(self.bind_group_layout.as_ref().unwrap())],
+                    immediate_size: 0,
+                });
+
+        // Create compute pipeline
+        self.compute_pipeline = Some(context.device.create_compute_pipeline(
+            &wgpu::ComputePipelineDescriptor {
+                label: Some("Noise Pipeline"),
+                layout: Some(&pipeline_layout),
+                module: &shader,
+                entry_point: Some("main"),
+                compilation_options: Default::default(),
+                cache: None,
+            },
+        ));
+
+        Ok(())
+    }
+
+    fn requires_initialization(&self) -> bool {
+        true
+    }
+
+    fn supports_dynamic_resizing(&self) -> bool {
+        true
+    }
+
+    fn resize(&mut self, new_batch_size: usize, new_vector_dim: usize) -> Result<()> {
+        // For NoisePipelineStage, we expect vector_dim to always be 2 (complex numbers)
+        if new_vector_dim != 2 {
+            anyhow::bail!("NoisePipelineStage requires vector_dim of 2 for complex numbers");
+        }
+
+        // new_batch_size is total elements
+        // In combined mode, total_elements = 2 * n * batch_size
+        // In non-combined mode, total_elements = n * batch_size
+        if self.n == 0 {
+            anyhow::bail!("NoisePipelineStage n is 0");
+        }
+
+        let total_elements = new_batch_size;
+        if self.combined {
+            // In combined mode, total_elements = 2 * n * batch_size
+            if total_elements % (2 * self.n) != 0 {
+                anyhow::bail!(
+                    "New batch size {} is not a multiple of 2 * n {}",
+                    total_elements,
+                    self.n
+                );
+            }
+            self.batch_size = (total_elements / (2 * self.n)) as u32;
+        } else {
+            if total_elements % self.n != 0 {
+                anyhow::bail!(
+                    "New batch size {} is not a multiple of n {}",
+                    total_elements,
+                    self.n
+                );
+            }
+            self.batch_size = (total_elements / self.n) as u32;
+        }
+
+        Ok(())
+    }
+
+    fn update_n(&mut self, new_n: usize) -> Result<()> {
+        self.n = new_n;
+        Ok(())
+    }
+}
 
 #[cfg(test)]
 mod tests {

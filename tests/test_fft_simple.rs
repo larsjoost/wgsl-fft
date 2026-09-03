@@ -36,15 +36,12 @@ async fn test_fft_ifft_no_multiply() -> anyhow::Result<()> {
         .build()
         .await?;
 
-    // Write input data
-    pipeline.write_input(&input).await?;
-
-    // Advance pipeline by 2 ticks
-    pipeline.tick(Some(())).await?;
-    pipeline.tick(Some(())).await?;
-
-    // Read output
-    let output_data = pipeline.read_output().await?;
+    // Process input through the pipeline (2-stage pipeline: FFT -> IFFT)
+    // For a 2-stage pipeline, we need 2 process calls for output to appear
+    // First call writes input and processes through all stages, but doesn't return output yet
+    // Second call returns the output from the first processing
+    let _ = pipeline.process(Some(&input), ()).await?;
+    let output_data = pipeline.process(None, ()).await?;
     let output = output_data.map(|(_, data)| data).unwrap_or_default();
 
     // Extract real parts

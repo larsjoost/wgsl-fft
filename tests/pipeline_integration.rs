@@ -95,14 +95,8 @@ async fn test_simple_interleaved_pipeline() -> anyhow::Result<()> {
         .build()
         .await?;
 
-    // Write interleaved input
-    pipeline.write_input(&interleaved_input).await?;
-
-    // Advance pipeline by 1 tick
-    pipeline.tick(Some(())).await?;
-
-    // Read output
-    let output_data = pipeline.read_output().await?;
+    // Process input and get output (replaces write_input + tick + read_output)
+    let output_data = pipeline.process(Some(&interleaved_input), ()).await?;
     let output = output_data.map(|(_, data)| data).unwrap_or_default();
 
     // Verify output size (2 * n complex numbers = 2 * n * 2 floats, same as input)
@@ -175,11 +169,8 @@ async fn test_larger_fft_size() -> anyhow::Result<()> {
         .build()
         .await?;
 
-    // Write interleaved input
-    pipeline.write_input(&interleaved_input).await?;
-    pipeline.tick(Some(())).await?;
-
-    let output_data = pipeline.read_output().await?;
+    // Process input and get output (replaces write_input + tick + read_output)
+    let output_data = pipeline.process(Some(&interleaved_input), ()).await?;
     let output = output_data.map(|(_, data)| data).unwrap_or_default();
 
     // Just verify it ran without errors

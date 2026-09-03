@@ -577,22 +577,13 @@ fn main() -> Result<()> {
         pipeline.add_side_input("b_fft", Arc::new(b_fft_buffer));
         println!("✓ Side input registered");
 
-        // Write input A to the pipeline
-        println!("\nWriting input A to pipeline...");
-        pipeline.write_input(&a_data).await?;
-        println!("✓ Input A written");
-
-        // Tick the pipeline - data needs to propagate through all 4 stages
-        println!("\nTicking pipeline...");
-        for i in 0..pipeline.num_stages() {
-            pipeline.tick(Some(0u64)).await?;
-            println!("  Tick {}: Data propagated to stage {}", i + 1, i + 1);
-        }
+        // Process input A through the pipeline
+        println!("\nProcessing input A through pipeline...");
+        let result = pipeline.process(Some(&a_data), 0u64).await?;
         println!("✓ Pipeline complete");
 
-        // Read the output
+        // Get the output
         println!("\nReading output...");
-        let result = pipeline.read_output().await?;
         let (tag, data) = result.expect("Expected output to be ready");
         println!("✓ Output read (tag: {:?}, {} elements)", tag, data.len());
 
