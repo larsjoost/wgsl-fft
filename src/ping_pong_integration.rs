@@ -440,7 +440,7 @@ impl PipelineStage for MultiplyPipelineStage {
                 bytemuck::cast_slice(&[total_elements as u32]),
             );
         }
-        
+
         // Update the half count uniform buffer
         if let Some(ref half_count_uniform) = self.half_count_uniform {
             queue.write_buffer(

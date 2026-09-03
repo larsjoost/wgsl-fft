@@ -414,7 +414,10 @@ impl Pipeline {
 
     /// Get a stage by name.
     pub fn get_stage_by_name(&self, name: &str) -> Option<&dyn ComputeStage> {
-        self.stages.iter().find(|stage| stage.name() == name).map(|v| &**v)
+        self.stages
+            .iter()
+            .find(|stage| stage.name() == name)
+            .map(|v| &**v)
     }
 
     /// Execute one tick of the pipeline.
